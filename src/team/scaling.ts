@@ -57,10 +57,7 @@ import {
   isLowComplexityAgentType,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
 } from './model-contract.js';
-// Inlined to avoid circular dependency with runtime.ts
-function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
-  return resolve(join(leaderCwd, '.omx', 'state'));
-}
+import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
 // ── Environment gate ──────────────────────────────────────────────────────────
 

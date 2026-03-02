@@ -95,6 +95,7 @@ import {
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
 } from './model-contract.js';
+import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
@@ -367,9 +368,7 @@ function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
 
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
-export function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
-  return resolve(join(leaderCwd, '.omx', 'state'));
-}
+export { resolveCanonicalTeamStateRoot };
 
 function spawnPromptWorker(
   teamName: string,
