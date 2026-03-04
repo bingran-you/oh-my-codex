@@ -89,7 +89,7 @@ function detectTmuxSessionByPid(): string | null {
 
       // Get parent PID
       try {
-        const ppidStr = execSync(`ps -o ppid= -p ${currentPid}`, {
+        const ppidStr = execFileSync("ps", ["-o", "ppid=", "-p", String(currentPid)], {
           encoding: "utf-8",
           timeout: 1000,
           stdio: ["pipe", "pipe", "pipe"],
@@ -235,7 +235,7 @@ function detectTmuxPaneByPid(): string | null {
         return panePids.get(currentPid) || null;
       }
       try {
-        const ppidStr = execSync(`ps -o ppid= -p ${currentPid}`, {
+        const ppidStr = execFileSync("ps", ["-o", "ppid=", "-p", String(currentPid)], {
           encoding: "utf-8",
           timeout: 1000,
           stdio: ["pipe", "pipe", "pipe"],

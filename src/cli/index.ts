@@ -123,6 +123,11 @@ const REASONING_MODES = ['low', 'medium', 'high', 'xhigh'] as const;
 type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = 'Usage: omx reasoning <low|medium|high|xhigh>';
+const ALLOWED_SHELLS = new Set([
+  '/bin/sh', '/bin/bash', '/bin/zsh', '/bin/dash', '/bin/fish',
+  '/usr/bin/sh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/dash', '/usr/bin/fish',
+  '/usr/local/bin/bash', '/usr/local/bin/zsh', '/usr/local/bin/fish',
+]);
 
 type CliCommand = 'launch' | 'setup' | 'uninstall' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
@@ -1174,7 +1179,8 @@ export function buildTmuxPaneCommand(command: string, args: string[], shellPath:
   } else if (shellPath && /\/bash$/i.test(shellPath)) {
     rcSource = 'if [ -f ~/.bashrc ]; then source ~/.bashrc; fi; ';
   }
-  const shellBin = shellPath && shellPath.trim() !== '' ? shellPath : '/bin/sh';
+  const rawShell = shellPath && shellPath.trim() !== '' ? shellPath.trim() : '/bin/sh';
+  const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : '/bin/sh';
   const inner = `${rcSource}exec ${bareCmd}`;
   return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(inner)}`;
 }
