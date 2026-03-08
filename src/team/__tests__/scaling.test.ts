@@ -6,6 +6,8 @@ import { tmpdir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import {
   initTeamState,
+  createTask,
+  readTask,
   readTeamConfig,
   saveTeamConfig,
   readWorkerStatus,
@@ -271,6 +273,103 @@ describe('scaleUp', () => {
     } finally {
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
+    }
+  });
+
+
+  it('persists scaled-up task roles in canonical task state and inbox ids', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-role-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-role-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '\%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%31"',
+          '    ;;',
+          '  list-panes)',
+          '    echo "42424"',
+          '    ;;',
+          '  send-keys)',
+          '    ;;',
+          '  capture-pane)',
+          '    echo ""',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.omx', 'state', 'team', 'scale-up-role'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'worker-agents.md'), '# Base worker instructions\n');
+
+      await initTeamState('scale-up-role', 'task', 'executor', 1, cwd);
+      await createTask('scale-up-role', {
+        subject: 'existing task',
+        description: 'already persisted',
+        status: 'pending',
+        owner: 'worker-1',
+      }, cwd);
+
+      const config = await readTeamConfig('scale-up-role', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-scale-up-role';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'scale-up-role',
+        1,
+        'executor',
+        [{ subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const createdTask = await readTask('scale-up-role', '2', cwd);
+      assert.equal(createdTask?.role, 'writer');
+      assert.equal(createdTask?.owner, 'worker-2');
+
+      const workerIdentity = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'identity.json'), 'utf-8')) as { role?: string };
+      assert.equal(workerIdentity.role, 'writer');
+
+      const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'inbox.md'), 'utf-8');
+      assert.match(inbox, /Task 2/);
+      assert.match(inbox, /Role: writer/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
