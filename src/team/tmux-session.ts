@@ -931,6 +931,44 @@ export function createTeamSession(
   }
 }
 
+export function restoreStandaloneHudPane(
+  leaderPaneId: string | null | undefined,
+  cwd: string,
+): string | null {
+  const normalizedLeaderPaneId = normalizePaneTarget(leaderPaneId);
+  if (!normalizedLeaderPaneId) return null;
+
+  const omxEntry = process.argv[1];
+  if (!omxEntry || omxEntry.trim() === '') return null;
+
+  const hudCmd = `node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const hudCwd = translatePathForMsys(cwd);
+  const hudResult = runTmux([
+    'split-window',
+    '-v',
+    '-l',
+    String(HUD_TMUX_TEAM_HEIGHT_LINES),
+    '-t',
+    normalizedLeaderPaneId,
+    '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-c',
+    hudCwd,
+    hudCmd,
+  ]);
+  if (!hudResult.ok) return null;
+
+  const paneId = hudResult.stdout.split('\n')[0]?.trim() ?? '';
+  if (!paneId.startsWith('%')) return null;
+
+  runTmux(buildScheduleDelayedHudResizeArgs(paneId));
+  runTmux(buildReconcileHudResizeArgs(paneId));
+  runTmux(['select-pane', '-t', normalizedLeaderPaneId]);
+  return paneId;
+}
+
 /**
  * Returns the tmux argv arrays for the scroll-and-copy key bindings applied
  * by enableMouseScrolling. Exported as a pure function so tests can verify

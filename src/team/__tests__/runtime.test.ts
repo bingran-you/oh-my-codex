@@ -1012,11 +1012,11 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       const hudSplitRe = new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
-      assert.equal(tmuxLog.match(hudSplitRe)?.length ?? 0, 2);
+      assert.equal(tmuxLog.match(hudSplitRe)?.length ?? 0, 3);
       assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
       assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
-      assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 2);
-      assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 2);
+      assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
+      assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
       assert.ok((tmuxLog.match(/select-layout -t leader:0 main-vertical/g)?.length ?? 0) >= 2);
       assert.match(tmuxLog, /kill-pane -t %3/);
     } finally {
@@ -2029,6 +2029,72 @@ esac
       assert.match(tmuxLog, /kill-pane -t %404/);
       assert.match(tmuxLog, /kill-pane -t %405/);
       assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-dead-pane/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+
+  it('shutdownTeam restores a standalone HUD pane after tearing down the team HUD', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restore-hud-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restore-hud-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    exit 1
+    ;;
+  split-window)
+    printf '%%44\n'
+    exit 0
+    ;;
+  kill-pane|kill-session|select-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('team-shutdown-restore-hud', 'shutdown restore hud test', 'executor', 2, cwd);
+      const config = await readTeamConfig('team-shutdown-restore-hud', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'leader:0';
+      config.leader_pane_id = '%11';
+      config.hud_pane_id = '%12';
+      config.workers[0]!.pane_id = '%12';
+      config.workers[1]!.pane_id = '%13';
+      await saveTeamConfig(config, cwd);
+
+      await shutdownTeam('team-shutdown-restore-hud', cwd, { force: true });
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+      assert.match(tmuxLog, /kill-pane -t %12/);
+      assert.match(tmuxLog, /kill-pane -t %13/);
+      assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
+      assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
+      assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
+      assert.match(tmuxLog, /hud --watch/);
+      assert.match(tmuxLog, /select-pane -t %11/);
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;

@@ -22,6 +22,7 @@ import {
   isWorkerAlive,
   getWorkerPanePid,
   killWorkerByPaneIdAsync,
+  restoreStandaloneHudPane,
   teardownWorkerPanes,
   unregisterResizeHook,
   destroyTeamSession,
@@ -1759,6 +1760,12 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     });
     if (hudPaneId) {
       await killWorkerByPaneIdAsync(hudPaneId, leaderPaneId ?? undefined);
+      if (sessionName.includes(':')) {
+        const restoredHudPaneId = restoreStandaloneHudPane(leaderPaneId, cwd);
+        if (!restoredHudPaneId) {
+          console.warn(`[team shutdown] ${sanitized}: failed to restore standalone HUD pane`);
+        }
+      }
     }
 
     // 4. Destroy tmux session
