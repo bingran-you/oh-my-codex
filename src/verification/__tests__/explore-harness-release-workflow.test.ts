@@ -15,7 +15,7 @@ describe('native release workflow', () => {
     assert.match(workflow, /id-token:\s*write/);
     assert.match(workflow, /ubuntu-24\.04/);
     assert.match(workflow, /ubuntu-24\.04-arm/);
-    assert.match(workflow, /macos-13/);
+    assert.match(workflow, /macos-15-intel/);
     assert.match(workflow, /macos-14/);
     assert.match(workflow, /windows-latest/);
     assert.match(workflow, /cargo install cargo-dist/);
