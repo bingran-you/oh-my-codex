@@ -91,6 +91,52 @@ def run_random_search(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_cem_search(config: dict[str, Any]) -> dict[str, Any]:
+    dim = int(config.get('dimension', DIMENSION))
+    budget = int(config.get('budget', 64))
+    final_resamples = int(config.get('final_resamples', 24))
+    seed = int(config.get('seed', 23))
+    params = dict(config.get('params', {}))
+    batch_size = int(params.get('cem_batch_size', 8))
+    rng = np.random.default_rng(seed)
+
+    mean = np.full(dim, 0.5, dtype=float)
+    std = np.full(dim, 0.28, dtype=float)
+    all_points: list[np.ndarray] = []
+    all_scores: list[float] = []
+
+    for offset in range(0, budget, batch_size):
+        current_batch = min(batch_size, budget - offset)
+        if offset == 0:
+            points = sample_uniform(rng, current_batch, dim)
+        else:
+            points = np.clip(rng.normal(mean, std, size=(current_batch, dim)), 0.0, 1.0)
+
+        scores = np.array([noisy_objective(point, rng) for point in points], dtype=float)
+        all_points.append(points)
+        all_scores.append(scores)
+
+        X = np.vstack(all_points)
+        y = np.concatenate(all_scores)
+        elite = X[np.argsort(y)[-max(4, len(y) // 6):]]
+        mean = elite.mean(axis=0)
+        std = np.clip(elite.std(axis=0), 0.05, 0.25)
+
+    X = np.vstack(all_points)
+    y = np.concatenate(all_scores)
+    incumbent = X[int(np.argmax(y))]
+    resample_rng = np.random.default_rng(seed + 10_000)
+    final_scores = np.array([noisy_objective(incumbent, resample_rng) for _ in range(final_resamples)], dtype=float)
+    return {
+        'algorithm': 'cem_search',
+        'best_observed': float(np.max(y)),
+        'best_mean': float(final_scores.mean()),
+        'best_std': float(final_scores.std(ddof=0)),
+        'best_noiseless': float(noiseless_objective(incumbent)),
+        'incumbent': incumbent.tolist(),
+    }
+
+
 def run_screened_bayesian_gp(config: dict[str, Any]) -> dict[str, Any]:
     dim = int(config.get('dimension', DIMENSION))
     budget = int(config.get('budget', 64))
@@ -172,6 +218,8 @@ def run_search(config: dict[str, Any]) -> dict[str, Any]:
     algorithm = config.get('algorithm', 'random_search')
     if algorithm == 'random_search':
         return run_random_search(config)
+    if algorithm == 'cem_search':
+        return run_cem_search(config)
     if algorithm == 'screened_bayesian_gp':
         return run_screened_bayesian_gp(config)
     raise ValueError(f'Unsupported algorithm: {algorithm}')

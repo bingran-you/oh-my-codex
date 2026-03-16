@@ -1,5 +1,5 @@
 {
-  "algorithm": "random_search",
+  "algorithm": "cem_search",
   "dimension": 32,
   "budget": 64,
   "final_resamples": 24,
