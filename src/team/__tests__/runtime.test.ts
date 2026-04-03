@@ -1983,6 +1983,14 @@ process.on('SIGTERM', () => {
       // Verify worker's changes are integrated into leader
       const snapshot = await readMonitorSnapshot('team-auto-commit', repo);
       assert.ok(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, 'auto-committed changes should be integrated');
+
+      const ledgerPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-auto-commit.ledger.json');
+      assert.equal(existsSync(ledgerPath), true, 'commit hygiene ledger should be written for runtime operational commits');
+      const ledger = JSON.parse(await readFile(ledgerPath, 'utf-8')) as {
+        entries: Array<{ operation: string; operational_commit?: string | null }>;
+      };
+      assert.equal(ledger.entries.some((entry) => entry.operation === 'auto_checkpoint'), true);
+      assert.equal(ledger.entries.some((entry) => entry.operation === 'integration_merge'), true);
     } finally {
       if (workerPath) {
         await rm(workerPath, { recursive: true, force: true });
@@ -2154,6 +2162,15 @@ process.on('SIGTERM', () => {
       const newLeaderHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
       const mergeBase = execFileSync('git', ['merge-base', newLeaderHead, 'wk2-xr-branch'], { cwd: repo, encoding: 'utf-8' }).trim();
       assert.equal(mergeBase, newLeaderHead, 'worker-2 should be rebased onto new leader HEAD');
+
+      const ledgerPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-cross-rebase.ledger.json');
+      const ledger = JSON.parse(await readFile(ledgerPath, 'utf-8')) as {
+        entries: Array<{ operation: string; worker_name: string; status: string }>;
+      };
+      assert.equal(
+        ledger.entries.some((entry) => entry.operation === 'cross_rebase' && entry.worker_name === 'worker-2' && entry.status === 'applied'),
+        true,
+      );
     } finally {
       if (worker1Path) {
         await rm(worker1Path, { recursive: true, force: true });

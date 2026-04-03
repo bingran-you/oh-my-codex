@@ -113,6 +113,13 @@ import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
 import { buildRebalanceDecisions } from './rebalance-policy.js';
 import { readModeState, updateModeState } from '../modes/base.js';
 import {
+  appendTeamCommitHygieneEntries,
+  buildTeamCommitHygieneContext,
+  writeTeamCommitHygieneContext,
+  type TeamCommitHygieneArtifactPaths,
+  type TeamOperationalCommitEntry,
+} from './commit-hygiene.js';
+import {
   assertCleanLeaderWorkspaceForWorkerWorktrees,
   ensureWorktree,
   isGitRepository,
@@ -204,6 +211,10 @@ interface ShutdownOptions {
   force?: boolean;
 }
 
+export interface TeamShutdownSummary {
+  commitHygieneArtifacts: TeamCommitHygieneArtifactPaths | null;
+}
+
 function collectProvisionedShutdownWorktrees(config: TeamConfig): EnsureWorktreeResult[] {
   const seenWorktreePaths = new Set<string>();
   const worktrees: EnsureWorktreeResult[] = [];
@@ -250,6 +261,8 @@ interface WorkerShutdownMergeReport {
   summaryText: string | null;
   mergeOutcome: 'merged' | 'conflict' | 'noop' | 'skipped';
   mergeDetail: string;
+  leaderHeadBefore: string | null;
+  leaderHeadAfter: string | null;
 }
 
 function runCommand(command: string, args: string[], cwd: string): CommandResult {
@@ -390,6 +403,8 @@ async function integrateWorkerCommitsIntoLeader(params: {
   const next: Record<string, TeamWorkerIntegrationState> = { ...(previous?.integrationByWorker ?? {}) };
   const leaderHeadAtCycleStart = resolveLeaderHead(resolve(config.workers[0]?.worktree_repo_root ?? cwd), cwd);
   const integratedWorkerNames = new Set<string>();
+  const commitHygieneEntries: TeamOperationalCommitEntry[] = [];
+  const artifactCwd = config.leader_cwd ?? cwd;
 
   // ── Phase A: Auto-commit dirty worktrees ──
   for (const worker of config.workers) {
@@ -402,6 +417,16 @@ async function integrateWorkerCommitsIntoLeader(params: {
         worktree_path: resolve(worker.worktree_path),
         summary: `auto-committed dirty worktree for ${worker.name}`,
       }, cwd);
+      commitHygieneEntries.push({
+        recorded_at: new Date().toISOString(),
+        operation: 'auto_checkpoint',
+        worker_name: worker.name,
+        task_id: worker.assigned_tasks[0],
+        status: 'applied',
+        operational_commit: commitHash,
+        worktree_path: resolve(worker.worktree_path),
+        detail: 'Dirty worker worktree checkpointed before runtime integration.',
+      });
     }
   }
 
@@ -456,6 +481,19 @@ async function integrateWorkerCommitsIntoLeader(params: {
           summary: `merged ${worker.name} into leader via --no-ff -X theirs`,
         }, cwd);
         await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATED: merged ${worker.name} (${workerHead.slice(0, 12)}) into leader HEAD ${newLeaderHead.slice(0, 12)} via merge --no-ff.`, cwd);
+        commitHygieneEntries.push({
+          recorded_at: new Date().toISOString(),
+          operation: 'integration_merge',
+          worker_name: worker.name,
+          task_id: worker.assigned_tasks[0],
+          status: 'applied',
+          operational_commit: newLeaderHead,
+          source_commit: workerHead,
+          leader_head_before: leaderHead,
+          leader_head_after: newLeaderHead,
+          worktree_path: worktreePath,
+          detail: 'Leader created a runtime merge commit to integrate worker history.',
+        });
       } else {
         // Merge failed even with -X theirs (e.g. binary conflict) — abort and log
         const conflictFiles = listConflictFiles(repoRoot, cwd);
@@ -550,6 +588,19 @@ async function integrateWorkerCommitsIntoLeader(params: {
           summary: `cherry-picked ${commit.slice(0, 12)} from ${worker.name} with -X theirs`,
         }, cwd);
         await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATED: cherry-picked ${commit.slice(0, 12)} from ${worker.name} into leader HEAD ${newLeaderHead.slice(0, 12)} (-X theirs).`, cwd);
+        commitHygieneEntries.push({
+          recorded_at: new Date().toISOString(),
+          operation: 'integration_cherry_pick',
+          worker_name: worker.name,
+          task_id: worker.assigned_tasks[0],
+          status: 'applied',
+          operational_commit: newLeaderHead,
+          source_commit: commit,
+          leader_head_before: leaderHead,
+          leader_head_after: newLeaderHead,
+          worktree_path: worktreePath,
+          detail: 'Leader created a runtime cherry-pick commit while integrating diverged worker history.',
+        });
       }
 
       if (allPicked) {
@@ -599,8 +650,10 @@ async function integrateWorkerCommitsIntoLeader(params: {
       }
 
       // Rebase with -X ours (in rebase context, "ours" = upstream = leader wins)
+      const workerHeadBeforeRebase = resolveWorkerHead(worktreePath);
       const rebase = runGitCommand(repoRoot, ['rebase', '-X', 'ours', newLeaderHead], worktreePath);
       if (rebase.ok) {
+        const workerHeadAfterRebase = resolveWorkerHead(worktreePath);
         const state = next[worker.name] ?? {};
         state.last_rebased_leader_head = newLeaderHead;
         state.status = 'idle';
@@ -614,6 +667,19 @@ async function integrateWorkerCommitsIntoLeader(params: {
           worktree_path: worktreePath,
           summary: `cross-rebased ${worker.name} onto ${newLeaderHead.slice(0, 12)} (-X ours)`,
         }, cwd);
+        commitHygieneEntries.push({
+          recorded_at: new Date().toISOString(),
+          operation: 'cross_rebase',
+          worker_name: worker.name,
+          task_id: worker.assigned_tasks[0],
+          status: 'applied',
+          operational_commit: workerHeadAfterRebase,
+          leader_head_after: newLeaderHead,
+          worker_head_before: workerHeadBeforeRebase,
+          worker_head_after: workerHeadAfterRebase,
+          worktree_path: worktreePath,
+          detail: 'Runtime rebase rewrote worker history onto the updated leader head.',
+        });
       } else {
         // Rebase failed — abort to restore worktree, log for retry next cycle
         const conflictFiles = listConflictFiles(repoRoot, worktreePath);
@@ -638,6 +704,10 @@ async function integrateWorkerCommitsIntoLeader(params: {
     }
   }
 
+  if (commitHygieneEntries.length > 0) {
+    await appendTeamCommitHygieneEntries(teamName, commitHygieneEntries, artifactCwd)
+  }
+
   return next;
 }
 
@@ -651,6 +721,8 @@ function renderWorktreeMergeReport(report: WorkerShutdownMergeReport): string {
     `- synthetic_commit: ${report.syntheticCommit ?? 'none'}`,
     `- merge_outcome: ${report.mergeOutcome}`,
     `- merge_detail: ${report.mergeDetail}`,
+    `- leader_head_before: ${report.leaderHeadBefore ?? 'none'}`,
+    `- leader_head_after: ${report.leaderHeadAfter ?? 'none'}`,
     '',
     '## Summary',
     report.summaryText ?? 'sparkshell summary unavailable; using raw diff fallback.',
@@ -689,6 +761,8 @@ async function prepareShutdownMergeReport(
         summaryText: null,
         mergeOutcome: 'skipped',
         mergeDetail: addResult.stderr || 'git add -A failed',
+        leaderHeadBefore: resolveLeaderHead(repoRoot, leaderCwd),
+        leaderHeadAfter: resolveLeaderHead(repoRoot, leaderCwd),
       };
     }
     const commitResult = runGitCommand(
@@ -710,6 +784,8 @@ async function prepareShutdownMergeReport(
         summaryText: null,
         mergeOutcome: 'skipped',
         mergeDetail: commitResult.stderr || 'git commit failed',
+        leaderHeadBefore: resolveLeaderHead(repoRoot, leaderCwd),
+        leaderHeadAfter: resolveLeaderHead(repoRoot, leaderCwd),
       };
     }
   }
@@ -719,9 +795,11 @@ async function prepareShutdownMergeReport(
   const diffText = getWorktreeDiffText(worktreePath);
   const summaryText = summarizeWorktreeDiffWithSparkShell(worktreePath);
   const reportPath = join(worktreePath, '.omx', 'diff.md');
+  const leaderHeadBefore = resolveLeaderHead(repoRoot, leaderCwd);
 
   let mergeOutcome: WorkerShutdownMergeReport['mergeOutcome'] = 'skipped';
   let mergeDetail = 'worktree merge skipped';
+  let leaderHeadAfter = leaderHeadBefore;
   if (sourceRef) {
     const alreadyMerged = runGitCommand(repoRoot, ['merge-base', '--is-ancestor', sourceRef, 'HEAD'], leaderCwd);
     if (alreadyMerged.ok) {
@@ -732,10 +810,12 @@ async function prepareShutdownMergeReport(
       if (mergeResult.ok) {
         mergeOutcome = 'merged';
         mergeDetail = mergeResult.stdout || 'merged successfully';
+        leaderHeadAfter = resolveLeaderHead(repoRoot, leaderCwd) ?? leaderHeadBefore;
       } else {
         mergeOutcome = 'conflict';
         mergeDetail = mergeResult.stderr || mergeResult.stdout || 'merge failed';
         runGitCommand(repoRoot, ['merge', '--abort'], leaderCwd);
+        leaderHeadAfter = resolveLeaderHead(repoRoot, leaderCwd) ?? leaderHeadBefore;
       }
     }
   }
@@ -750,6 +830,8 @@ async function prepareShutdownMergeReport(
     summaryText,
     mergeOutcome,
     mergeDetail,
+    leaderHeadBefore,
+    leaderHeadAfter,
   };
 
   await mkdir(join(worktreePath, '.omx'), { recursive: true });
@@ -758,11 +840,13 @@ async function prepareShutdownMergeReport(
   return report;
 }
 
-async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCwd: string): Promise<void> {
+async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCwd: string): Promise<WorkerShutdownMergeReport[]> {
+  const reports: WorkerShutdownMergeReport[] = []
   for (const worker of config.workers) {
     if (!worker.worktree_path || !worker.worktree_repo_root) continue;
     try {
-      await prepareShutdownMergeReport(worker, leaderCwd);
+      const report = await prepareShutdownMergeReport(worker, leaderCwd);
+      if (report) reports.push(report);
     } catch (error) {
       const worktreePath = resolve(worker.worktree_path);
       const reportPath = join(worktreePath, '.omx', 'diff.md');
@@ -780,6 +864,7 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
       process.stdout.write(`${fallback}\n`);
     }
   }
+  return reports
 }
 
 export interface TeamStartOptions {
@@ -2152,7 +2237,7 @@ export async function reassignTask(
 /**
  * Graceful shutdown: send shutdown inbox to all workers, wait, force kill, cleanup.
  */
-export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<void> {
+export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<TeamShutdownSummary> {
   const force = options.force === true;
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
@@ -2165,7 +2250,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
     await cleanupTeamState(sanitized, cwd);
     restoreTeamModelInstructionsFile(sanitized);
-    return;
+    return { commitHygieneArtifacts: null };
   }
   const manifest = await readTeamManifestV2(sanitized, cwd);
   const governance = resolveGovernancePolicy(
@@ -2355,7 +2440,53 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
   }
 
-  await prepareWorkerWorktreeShutdownReports(config, cwd);
+  const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
+
+  const commitHygieneEntries: TeamOperationalCommitEntry[] = [];
+  for (const report of shutdownReports) {
+    const worker = config.workers.find((entry) => entry.name === report.workerName);
+    if (report.syntheticCommit) {
+      commitHygieneEntries.push({
+        recorded_at: new Date().toISOString(),
+        operation: 'shutdown_checkpoint',
+        worker_name: report.workerName,
+        task_id: worker?.assigned_tasks[0],
+        status: 'applied',
+        operational_commit: report.syntheticCommit,
+        source_commit: report.sourceRef,
+        worktree_path: report.worktreePath,
+        report_path: report.reportPath,
+        detail: 'Runtime created a shutdown checkpoint commit to preserve worker worktree changes.',
+      });
+    }
+
+    if (report.sourceRef && report.mergeOutcome !== 'skipped') {
+      commitHygieneEntries.push({
+        recorded_at: new Date().toISOString(),
+        operation: 'shutdown_merge',
+        worker_name: report.workerName,
+        task_id: worker?.assigned_tasks[0],
+        status: report.mergeOutcome === 'merged' ? 'applied' : report.mergeOutcome,
+        operational_commit: report.mergeOutcome === 'merged' ? report.leaderHeadAfter : null,
+        source_commit: report.sourceRef,
+        leader_head_before: report.leaderHeadBefore,
+        leader_head_after: report.leaderHeadAfter,
+        worktree_path: report.worktreePath,
+        report_path: report.reportPath,
+        detail: report.mergeDetail,
+      });
+    }
+  }
+
+  const artifactCwd = config.leader_cwd ?? cwd;
+  const ledger = await appendTeamCommitHygieneEntries(sanitized, commitHygieneEntries, artifactCwd)
+  const taskView = await listTasks(sanitized, cwd).catch(() => [])
+  const commitHygieneContext = buildTeamCommitHygieneContext({
+    teamName: sanitized,
+    tasks: taskView,
+    ledger,
+  })
+  const commitHygieneArtifacts = await writeTeamCommitHygieneContext(sanitized, commitHygieneContext, artifactCwd)
 
   // 5. Remove worker worktree-root instructions and team-scoped fallback instructions.
   for (const worker of config.workers) {
@@ -2400,6 +2531,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   if (cleanupErrors.length > 0) {
     throw new Error(cleanupErrors.join(' | '));
   }
+
+  return { commitHygieneArtifacts }
 }
 
 /**

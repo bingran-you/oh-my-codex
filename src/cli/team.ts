@@ -2353,7 +2353,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const name = teamArgs[1];
     if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force]');
     const force = teamArgs.includes('--force');
-    await shutdownTeam(name, cwd, { force });
+    const summary = await shutdownTeam(name, cwd, { force });
     await updateModeState('team', {
       active: false,
       current_phase: 'cancelled',
@@ -2365,6 +2365,10 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       });
     });
     console.log(`Team shutdown complete: ${name}`);
+    if (summary.commitHygieneArtifacts) {
+      console.log(`commit_hygiene_context_json: ${summary.commitHygieneArtifacts.jsonPath}`);
+      console.log(`commit_hygiene_context_md: ${summary.commitHygieneArtifacts.markdownPath}`);
+    }
     return;
   }
 

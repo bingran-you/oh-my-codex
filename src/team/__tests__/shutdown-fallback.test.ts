@@ -91,6 +91,27 @@ process.on('SIGTERM', () => process.exit(0));
       assert.match(report, /merge_outcome: merged/);
       assert.doesNotMatch(report, /synthetic_commit: none/);
       assert.match(report, /worker-note\.txt/);
+
+      const commitHygieneJsonPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-shutdown-fallback-report.context.json');
+      const commitHygieneMarkdownPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-shutdown-fallback-report.md');
+      assert.equal(existsSync(commitHygieneJsonPath), true, 'shutdown should preserve a structured commit hygiene context artifact');
+      assert.equal(existsSync(commitHygieneMarkdownPath), true, 'shutdown should preserve a human-readable commit hygiene guide');
+
+      const commitHygieneContext = JSON.parse(await readFile(commitHygieneJsonPath, 'utf-8')) as {
+        lore_commit_protocol_required: boolean;
+        runtime_commits_are_scaffolding: boolean;
+        operational_entries: Array<{ operation: string; status: string }>;
+        leader_finalization_prompt: string;
+      };
+      assert.equal(commitHygieneContext.lore_commit_protocol_required, true);
+      assert.equal(commitHygieneContext.runtime_commits_are_scaffolding, true);
+      assert.equal(commitHygieneContext.operational_entries.some((entry) => entry.operation === 'shutdown_checkpoint'), true);
+      assert.equal(commitHygieneContext.operational_entries.some((entry) => entry.operation === 'shutdown_merge' && entry.status === 'applied'), true);
+      assert.match(commitHygieneContext.leader_finalization_prompt, /Lore-format final commit/i);
+
+      const commitHygieneGuide = await readFile(commitHygieneMarkdownPath, 'utf-8');
+      assert.match(commitHygieneGuide, /temporary scaffolding/i);
+      assert.match(commitHygieneGuide, /Suggested Leader Finalization Prompt/i);
     } finally {
       if (runtime) {
         await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});
