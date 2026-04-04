@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -401,6 +401,127 @@ describe('omx uninstall', () => {
       assert.match(res.stdout, /TUI status line section/);
       assert.match(res.stdout, /Top-level keys/);
       assert.match(res.stdout, /Feature flags/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when overlapping legacy ~/.agents/skills remains after user-scope uninstall', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalHelp = join(codexDir, 'skills', 'help');
+      const legacyHelp = join(home, '.agents', 'skills', 'help');
+      await mkdir(canonicalHelp, { recursive: true });
+      await mkdir(legacyHelp, { recursive: true });
+      await writeFile(join(canonicalHelp, 'SKILL.md'), '# canonical help\n');
+      await writeFile(join(legacyHelp, 'SKILL.md'), '# legacy help\n');
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Warning: 1 overlapping skill names remain between .*\.codex[\\/]+skills and .*\.agents[\\/]+skills; 1 differ in SKILL\.md content\. omx uninstall only removes the active canonical skill root; archive or remove ~\/\.agents\/skills if Codex still shows duplicates/,
+      );
+      assert.equal(existsSync(canonicalHelp), false, 'canonical OMX skill should be removed');
+      assert.equal(existsSync(join(home, '.agents', 'skills')), true, 'legacy skill root should remain for manual cleanup');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when a distinct legacy ~/.agents/skills root remains after user-scope uninstall', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalHelp = join(codexDir, 'skills', 'help');
+      const legacyDoctor = join(home, '.agents', 'skills', 'doctor');
+      await mkdir(canonicalHelp, { recursive: true });
+      await mkdir(legacyDoctor, { recursive: true });
+      await writeFile(join(canonicalHelp, 'SKILL.md'), '# canonical help\n');
+      await writeFile(join(legacyDoctor, 'SKILL.md'), '# legacy doctor\n');
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Warning: legacy ~\/\.agents\/skills still exists \(1 skills\)\. omx uninstall does not remove that historical root automatically; archive or remove ~\/\.agents\/skills if Codex still shows stale or duplicate skills/,
+      );
+      assert.equal(existsSync(canonicalHelp), false, 'canonical OMX skill should be removed');
+      assert.equal(existsSync(join(home, '.agents', 'skills')), true, 'legacy skill root should remain for manual cleanup');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not warn about legacy ~/.agents/skills when none exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalHelp = join(codexDir, 'skills', 'help');
+      await mkdir(canonicalHelp, { recursive: true });
+      await writeFile(join(canonicalHelp, 'SKILL.md'), '# canonical help\n');
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.doesNotMatch(res.stdout, /legacy ~\/\.agents\/skills still exists/);
+      assert.doesNotMatch(res.stdout, /omx uninstall does not remove legacy ~\/\.agents\/skills/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not warn about legacy ~/.agents/skills during project-scope uninstall', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const projectSkillsHelp = join(wd, '.codex', 'skills', 'help');
+      const legacyHelp = join(home, '.agents', 'skills', 'help');
+      await mkdir(projectSkillsHelp, { recursive: true });
+      await mkdir(legacyHelp, { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(projectSkillsHelp, 'SKILL.md'), '# project help\n');
+      await writeFile(join(legacyHelp, 'SKILL.md'), '# legacy help\n');
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Resolved scope: project/);
+      assert.doesNotMatch(res.stdout, /legacy ~\/\.agents\/skills still exists/);
+      assert.doesNotMatch(res.stdout, /omx uninstall does not remove legacy ~\/\.agents\/skills/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not warn when legacy ~/.agents/skills is just a link to the canonical skills root', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-legacy-link-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalSkillsRoot = join(codexDir, 'skills');
+      const canonicalSkill = join(canonicalSkillsRoot, 'doctor');
+      const legacyRoot = join(home, '.agents', 'skills');
+      await mkdir(canonicalSkill, { recursive: true });
+      await mkdir(join(home, '.agents'), { recursive: true });
+      await writeFile(join(canonicalSkill, 'SKILL.md'), '# canonical doctor\n');
+      await symlink(
+        canonicalSkillsRoot,
+        legacyRoot,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home, CODEX_HOME: codexDir });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.doesNotMatch(res.stdout, /legacy ~\/\.agents\/skills/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
