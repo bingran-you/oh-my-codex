@@ -5,7 +5,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
@@ -219,6 +219,9 @@ const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 const CODEX_VERSION_FLAGS = new Set(["--version", "-V"]);
 const TMUX_EXTENDED_KEYS_MODE = "always";
 const TMUX_EXTENDED_KEYS_FALLBACK_MODE = "off";
+const TMUX_EXTENDED_KEYS_LEASE_DIR = "tmux-extended-keys";
+const TMUX_EXTENDED_KEYS_LOCK_RETRY_MS = 20;
+const TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS = 100;
 
 type CliCommand =
   | "launch"
@@ -1380,32 +1383,127 @@ function escapeShellDoubleQuotedValue(value: string): string {
   return value.replace(/["\\$`]/g, "\\$&");
 }
 
-// tmux collapses Shift+Enter back to plain Enter unless extended keys are
-// enabled for the duration of the Codex TUI session.
-function buildTmuxExtendedKeysSetupSnippet(): string {
-  return [
-    `OMX_TMUX_PREV_EXTENDED_KEYS=$(tmux show-options -sv extended-keys 2>/dev/null || printf ${quoteShellArg(TMUX_EXTENDED_KEYS_FALLBACK_MODE)});`,
-    `tmux set-option -sq extended-keys ${TMUX_EXTENDED_KEYS_MODE} >/dev/null 2>&1 || true;`,
-  ].join(" ");
+interface TmuxExtendedKeysLeaseState {
+  originalMode: string;
+  holders: string[];
 }
 
-function buildTmuxExtendedKeysRestoreSnippet(): string {
-  return 'tmux set-option -sq extended-keys "${OMX_TMUX_PREV_EXTENDED_KEYS:-off}" >/dev/null 2>&1 || true;';
+function sanitizeTmuxLeaseKey(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "default";
+}
+
+function blockMs(ms: number): void {
+  const delay = Math.max(1, Math.floor(ms));
+  const shared = new SharedArrayBuffer(4);
+  const view = new Int32Array(shared);
+  Atomics.wait(view, 0, 0, delay);
+}
+
+function tmuxExtendedKeysLeaseRoot(cwd: string): string {
+  return join(cwd, ".omx", "state", TMUX_EXTENDED_KEYS_LEASE_DIR);
+}
+
+function resolveTmuxSocketPath(
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string {
+  return (
+    execTmuxSync(["display-message", "-p", "#{socket_path}"], execFileSyncImpl) ||
+    "default"
+  );
+}
+
+function tmuxExtendedKeysLeasePath(cwd: string, socketPath: string): string {
+  return join(
+    tmuxExtendedKeysLeaseRoot(cwd),
+    `${sanitizeTmuxLeaseKey(socketPath)}.json`,
+  );
+}
+
+function readTmuxExtendedKeysLeaseState(
+  leasePath: string,
+): TmuxExtendedKeysLeaseState | null {
+  if (!existsSync(leasePath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(leasePath, "utf-8")) as {
+      originalMode?: unknown;
+      holders?: unknown;
+    };
+    if (
+      typeof parsed.originalMode !== "string" ||
+      !Array.isArray(parsed.holders) ||
+      !parsed.holders.every((holder) => typeof holder === "string")
+    ) {
+      return null;
+    }
+    return {
+      originalMode: parsed.originalMode,
+      holders: [...parsed.holders],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTmuxExtendedKeysLeaseState(
+  leasePath: string,
+  state: TmuxExtendedKeysLeaseState,
+): void {
+  mkdirSync(dirname(leasePath), { recursive: true });
+  writeFileSync(leasePath, JSON.stringify(state, null, 2));
+}
+
+function withTmuxExtendedKeysLeaseLock<T>(
+  cwd: string,
+  socketPath: string,
+  run: () => T,
+): T {
+  const leaseRoot = tmuxExtendedKeysLeaseRoot(cwd);
+  mkdirSync(leaseRoot, { recursive: true });
+  const lockPath = join(
+    leaseRoot,
+    `${sanitizeTmuxLeaseKey(socketPath)}.lock`,
+  );
+  for (let attempt = 0; attempt < TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      try {
+        return run();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as NodeJS.ErrnoException).code)
+          : "";
+      if (code !== "EEXIST") throw err;
+      blockMs(TMUX_EXTENDED_KEYS_LOCK_RETRY_MS);
+    }
+  }
+  throw new Error(`timed out waiting for tmux extended-keys lease lock: ${lockPath}`);
 }
 
 function buildDetachedSessionLeaderCommand(
+  cwd: string,
   sessionName: string,
   codexCmd: string,
 ): string {
   const cleanupTrap = [
     "status=$?;",
     "trap - 0 INT TERM HUP;",
-    buildTmuxExtendedKeysRestoreSnippet(),
+    buildTmuxExtendedKeysReleaseShellSnippet(cwd),
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
     "exit $status;",
   ].join(" ");
   const wrapped = [
-    buildTmuxExtendedKeysSetupSnippet(),
+    buildTmuxExtendedKeysAcquireShellSnippet(cwd),
     `trap '${cleanupTrap}' 0 INT TERM HUP;`,
     codexCmd,
   ].join(" ");
@@ -1424,40 +1522,120 @@ function execTmuxSync(
   return execFileSyncImpl("tmux", [...args]).trim();
 }
 
+export function acquireTmuxExtendedKeysLease(
+  cwd: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string | null {
+  try {
+    const socketPath = resolveTmuxSocketPath(execFileSyncImpl);
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    const leaseId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      if (!state || state.holders.length === 0) {
+        const previousMode =
+          execTmuxSync(["show-options", "-sv", "extended-keys"], execFileSyncImpl) ||
+          TMUX_EXTENDED_KEYS_FALLBACK_MODE;
+        execTmuxSync(
+          ["set-option", "-sq", "extended-keys", TMUX_EXTENDED_KEYS_MODE],
+          execFileSyncImpl,
+        );
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: previousMode,
+          holders: [leaseId],
+        });
+        return;
+      }
+
+      state.holders.push(leaseId);
+      writeTmuxExtendedKeysLeaseState(leasePath, state);
+    });
+    return `${socketPath}\t${leaseId}`;
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    return null;
+  }
+}
+
+export function releaseTmuxExtendedKeysLease(
+  cwd: string,
+  leaseHandle: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): void {
+  if (!leaseHandle.trim()) return;
+  const [socketPathRaw = "", leaseId = ""] = leaseHandle.split("\t");
+  const socketPath = socketPathRaw.trim() || "default";
+  if (!leaseId) return;
+
+  try {
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      if (!state || state.holders.length === 0) {
+        rmSync(leasePath, { force: true });
+        return;
+      }
+
+      const holders = state.holders.filter((holder) => holder !== leaseId);
+      if (holders.length > 0) {
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: state.originalMode,
+          holders,
+        });
+        return;
+      }
+
+      execTmuxSync(
+        ["set-option", "-sq", "extended-keys", state.originalMode],
+        execFileSyncImpl,
+      );
+      rmSync(leasePath, { force: true });
+    });
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+  }
+}
+
+function buildTmuxExtendedKeysHelperCommand(
+  cwd: string,
+  operation: "acquire" | "release",
+): string {
+  const cwdLiteral = JSON.stringify(cwd);
+  const moduleUrlLiteral = JSON.stringify(import.meta.url);
+  const script =
+    operation === "acquire"
+      ? `const mod = await import(${moduleUrlLiteral}); const lease = mod.acquireTmuxExtendedKeysLease(${cwdLiteral}); if (lease) process.stdout.write(lease);`
+      : `const mod = await import(${moduleUrlLiteral}); mod.releaseTmuxExtendedKeysLease(${cwdLiteral}, process.argv[1] ?? "");`;
+  return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
+}
+
+function buildTmuxExtendedKeysAcquireShellSnippet(cwd: string): string {
+  return `OMX_TMUX_EXTENDED_KEYS_LEASE=$(${buildTmuxExtendedKeysHelperCommand(cwd, "acquire")} 2>/dev/null || true);`;
+}
+
+function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
+  return `if [ -n "\${OMX_TMUX_EXTENDED_KEYS_LEASE:-}" ]; then ${buildTmuxExtendedKeysHelperCommand(cwd, "release")} "\${OMX_TMUX_EXTENDED_KEYS_LEASE}" >/dev/null 2>&1 || true; fi;`;
+}
+
 export function withTmuxExtendedKeys<T>(
+  cwd: string,
   run: () => T,
   execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
     execFileSync(file, tmuxArgs, {
       encoding: "utf-8",
     }) as string,
 ): T {
-  let previousMode = TMUX_EXTENDED_KEYS_FALLBACK_MODE;
-  let enabled = false;
-  try {
-    previousMode =
-      execTmuxSync(["show-options", "-sv", "extended-keys"], execFileSyncImpl) ||
-      TMUX_EXTENDED_KEYS_FALLBACK_MODE;
-    execTmuxSync(
-      ["set-option", "-sq", "extended-keys", TMUX_EXTENDED_KEYS_MODE],
-      execFileSyncImpl,
-    );
-    enabled = true;
-  } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
-  }
+  const leaseHandle = acquireTmuxExtendedKeysLease(cwd, execFileSyncImpl);
   try {
     return run();
   } finally {
-    if (enabled) {
-      try {
-        execTmuxSync(
-          ["set-option", "-sq", "extended-keys", previousMode],
-          execFileSyncImpl,
-        );
-      } catch (err) {
-        process.stderr.write(`[cli/index] operation failed: ${err}\n`);
-      }
-    }
+    if (leaseHandle) releaseTmuxExtendedKeysLease(cwd, leaseHandle, execFileSyncImpl);
   }
 }
 
@@ -1474,7 +1652,7 @@ export function buildDetachedSessionBootstrapSteps(
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : buildDetachedSessionLeaderCommand(sessionName, codexCmd);
+    : buildDetachedSessionLeaderCommand(cwd, sessionName, codexCmd);
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -1904,7 +2082,7 @@ function runCodex(
     }
 
     try {
-      withTmuxExtendedKeys(() => {
+      withTmuxExtendedKeys(cwd, () => {
         runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
       });
     } finally {
