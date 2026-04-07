@@ -608,9 +608,9 @@ sleep 5
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      const runtimeToShutdown = runtime as TeamRuntime | null;
+      if (runtimeToShutdown) {
+        await shutdownTeam(runtimeToShutdown.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -908,9 +908,9 @@ esac
         },
       );
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      const runtimeToShutdown = runtime as TeamRuntime | null;
+      if (runtimeToShutdown) {
+        await shutdownTeam(runtimeToShutdown.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -1040,9 +1040,8 @@ sleep 5
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1127,9 +1126,8 @@ process.on('SIGTERM', () => process.exit(0));
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1251,9 +1249,8 @@ process.on('SIGTERM', () => process.exit(0));
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1346,9 +1343,8 @@ process.on('SIGTERM', () => process.exit(0));
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1410,9 +1406,8 @@ process.on('SIGTERM', () => process.exit(0));
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1546,9 +1541,9 @@ exit 0
         },
       );
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      const runtimeToShutdown = runtime as TeamRuntime | null;
+      if (runtimeToShutdown) {
+        await shutdownTeam(runtimeToShutdown.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
@@ -1912,9 +1907,8 @@ process.on('SIGTERM', () => {
       }
       assert.equal(alive, false, `worker pid ${workerPid} should be terminated after shutdown`);
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -1996,9 +1990,8 @@ process.on('SIGTERM', () => process.exit(0));
       }
       assert.equal(alive, false, `detached helper pid ${helperPid} should be terminated after shutdown`);
     } finally {
-      const activeRuntime: TeamRuntime | null = runtime;
-      if (activeRuntime) {
-        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (helperPid > 0) {
         try {
@@ -4046,6 +4039,7 @@ esac
           assert.ok(cfg);
           if (!cfg) throw new Error('missing team config');
           cfg.leader_pane_id = '%55';
+          cfg.team_state_root = '/tmp/custom-team-state-root';
           await saveTeamConfig(cfg, cwd);
 
           const manifestPath = teamStateTestPath(cwd, 'team', 'team-leader-inject', 'manifest.v2.json');
@@ -4066,6 +4060,10 @@ esac
           const latest = requests[requests.length - 1];
           assert.equal(latest?.status, 'notified');
           assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
+          assert.match(
+            latest?.trigger_message ?? '',
+            /Read \/tmp\/custom-team-state-root\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; new msg from worker-1\./,
+          );
 
           const deliveryLog = await readTeamDeliveryLog(cwd);
           const runtimeEntries = deliveryLog.filter((entry) =>

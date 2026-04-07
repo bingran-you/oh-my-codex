@@ -3766,7 +3766,11 @@ async function sendLeaderMailboxMessage(params: {
   cwd: string;
 }): Promise<DispatchOutcome> {
   const { teamName, fromWorker, body, config, dispatchPolicy, cwd } = params;
-  const triggerDirective = buildLeaderMailboxTriggerDirective(teamName, fromWorker);
+  const triggerDirective = buildLeaderMailboxTriggerDirective(
+    teamName,
+    fromWorker,
+    config.team_state_root || undefined,
+  );
   const transportPreference = resolveLeaderMailboxTransportPreference(dispatchPolicy);
   const queuedOutcome = await queueDirectMailboxMessage({
     teamName,
