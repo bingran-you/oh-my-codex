@@ -169,6 +169,7 @@ Options:
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
   --notify-temp  Enable temporary notification routing for this run/session only
+  --tmux         Launch the interactive leader session in detached tmux
   --discord      Select Discord provider for temporary notification mode
   --slack        Select Slack provider for temporary notification mode
   --telegram     Select Telegram provider for temporary notification mode
@@ -388,6 +389,43 @@ export function commandOwnsLocalHelp(command: CliCommand): boolean {
 
 export type CodexLaunchPolicy = "inside-tmux" | "detached-tmux" | "direct";
 
+function splitLeaderLaunchPolicyArgs(args: string[]): {
+  explicitPolicy?: CodexLaunchPolicy;
+  remainingArgs: string[];
+} {
+  const remainingArgs: string[] = [];
+  let explicitPolicy: CodexLaunchPolicy | undefined;
+  let passthroughOnly = false;
+
+  for (const arg of args) {
+    if (passthroughOnly) {
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      passthroughOnly = true;
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--tmux") {
+      explicitPolicy = "detached-tmux";
+      continue;
+    }
+
+    remainingArgs.push(arg);
+  }
+
+  return { explicitPolicy, remainingArgs };
+}
+
+export function resolveLeaderLaunchPolicyOverride(
+  args: string[],
+): CodexLaunchPolicy | undefined {
+  return splitLeaderLaunchPolicyArgs(args).explicitPolicy;
+}
+
 export function resolveCodexLaunchPolicy(
   env: NodeJS.ProcessEnv = process.env,
   _platform: NodeJS.Platform = process.platform,
@@ -395,11 +433,14 @@ export function resolveCodexLaunchPolicy(
   nativeWindows: boolean = isNativeWindows(),
   stdinIsTTY: boolean = Boolean(process.stdin.isTTY),
   stdoutIsTTY: boolean = Boolean(process.stdout.isTTY),
+  explicitPolicy?: CodexLaunchPolicy,
 ): CodexLaunchPolicy {
   if (env.TMUX) return "inside-tmux";
+  if (explicitPolicy === "detached-tmux") return tmuxAvailable ? "detached-tmux" : "direct";
+  if (explicitPolicy === "direct") return "direct";
   if (nativeWindows) return "direct";
   if (!stdinIsTTY || !stdoutIsTTY) return "direct";
-  return tmuxAvailable ? "detached-tmux" : "direct";
+  return "direct";
 }
 
 type ExecFileSyncFailure = NodeJS.ErrnoException & {
@@ -842,12 +883,18 @@ export async function launchWithHud(args: string[]): Promise<void> {
     parsedWorktree.remainingArgs,
     process.env,
   );
+  const explicitLaunchPolicy = resolveLeaderLaunchPolicyOverride(
+    notifyTempResult.passthroughArgs,
+  );
   const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
   const launchPolicy = resolveCodexLaunchPolicy(
     process.env,
     process.platform,
     undefined,
     isNativeWindows(),
+    undefined,
+    undefined,
+    explicitLaunchPolicy,
   );
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   const workerSparkModel = resolveWorkerSparkModel(
@@ -923,6 +970,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       workerSparkModel,
       codexHomeOverride,
       notifyTempContractRaw,
+      explicitLaunchPolicy,
     );
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
@@ -1016,12 +1064,13 @@ export async function execWithOverlay(args: string[]): Promise<void> {
 
 export function normalizeCodexLaunchArgs(args: string[]): string[] {
   const parsed = parseWorktreeMode(args);
+  const launchPolicyParsed = splitLeaderLaunchPolicyArgs(parsed.remainingArgs);
   const normalized: string[] = [];
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
 
-  for (const arg of parsed.remainingArgs) {
+  for (const arg of launchPolicyParsed.remainingArgs) {
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;
@@ -1997,6 +2046,7 @@ function runCodex(
   workerDefaultModel?: string,
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
+  explicitLaunchPolicy?: CodexLaunchPolicy,
 ): void {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
@@ -2035,6 +2085,9 @@ function runCodex(
     process.platform,
     undefined,
     nativeWindows,
+    undefined,
+    undefined,
+    explicitLaunchPolicy,
   );
 
   if (isCodexVersionRequest(launchArgs)) {
