@@ -44,9 +44,14 @@ function renderGitBranch(ctx: HudRenderContext): string | null {
 function renderRalph(ctx: HudRenderContext): string | null {
   if (!ctx.ralph) return null;
   const { iteration, max_iterations } = ctx.ralph;
-  if (!isColorEnabled()) return `ralph:${iteration}/${max_iterations}`;
-  const color = getRalphColor(iteration, max_iterations);
-  return `${color}ralph:${iteration}/${max_iterations}${RESET}`;
+  if (!Number.isFinite(iteration) || !Number.isFinite(max_iterations)) {
+    return yellow('ralph');
+  }
+  const safeIteration = iteration as number;
+  const safeMaxIterations = max_iterations as number;
+  if (!isColorEnabled()) return `ralph:${safeIteration}/${safeMaxIterations}`;
+  const color = getRalphColor(safeIteration, safeMaxIterations);
+  return `${color}ralph:${safeIteration}/${safeMaxIterations}${RESET}`;
 }
 
 function renderUltrawork(ctx: HudRenderContext): string | null {

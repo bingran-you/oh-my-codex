@@ -1100,6 +1100,67 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('uses a native PowerShell startup command on native Windows instead of /bin/sh -lc', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-worker-startup-win32-'));
+    const prevPath = process.env.PATH;
+    const prevPathext = process.env.PATHEXT;
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevLeaderNodePath = process.env.OMX_LEADER_NODE_PATH;
+    const prevMsystem = process.env.MSYSTEM;
+    const prevOstype = process.env.OSTYPE;
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevWslInterop = process.env.WSL_INTEROP;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    process.env.PATH = fakeBin;
+    process.env.PATHEXT = '.PS1';
+    process.env.SHELL = '/bin/zsh';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.OMX_LEADER_NODE_PATH = 'C:\\Program Files\\nodejs\\node.exe';
+    delete process.env.MSYSTEM;
+    delete process.env.OSTYPE;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const codexPs1Path = join(fakeBin, 'codex.ps1');
+      await writeFile(codexPs1Path, '');
+
+      const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5'], 'C:\\repo');
+      assert.doesNotMatch(cmd, /\/bin\/sh -lc/, 'native Windows workers must not launch through POSIX sh');
+      assert.match(cmd, /^powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand /);
+
+      const encoded = cmd.replace(/^powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand /, '');
+      const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
+      assert.match(decoded, /\$env:PATH = 'C:\\Program Files\\nodejs;' \+ \$env:PATH/);
+      assert.match(decoded, /\$env:OMX_TEAM_WORKER = 'alpha\/worker-1'/);
+      assert.match(decoded, new RegExp(escapeRegExp(`'-File' '${codexPs1Path}'`)));
+      assert.match(decoded, /'--model' 'gpt-5'/);
+      assert.match(decoded, /'--dangerously-bypass-approvals-and-sandbox'/);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevPathext === 'string') process.env.PATHEXT = prevPathext;
+      else delete process.env.PATHEXT;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevLeaderNodePath === 'string') process.env.OMX_LEADER_NODE_PATH = prevLeaderNodePath;
+      else delete process.env.OMX_LEADER_NODE_PATH;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof prevOstype === 'string') process.env.OSTYPE = prevOstype;
+      else delete process.env.OSTYPE;
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevWslInterop === 'string') process.env.WSL_INTEROP = prevWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to bash when SHELL is unsupported and zsh candidates are unavailable', () => {
     const prevShell = process.env.SHELL;
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
@@ -1356,6 +1417,63 @@ describe('team worker launch mode helpers', () => {
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('buildWorkerProcessLaunchSpec wraps Windows PowerShell shims for prompt workers', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-worker-spec-win32-'));
+    const prevPath = process.env.PATH;
+    const prevPathext = process.env.PATHEXT;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevMsystem = process.env.MSYSTEM;
+    const prevOstype = process.env.OSTYPE;
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevWslInterop = process.env.WSL_INTEROP;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    process.env.PATH = fakeBin;
+    process.env.PATHEXT = '.PS1';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    delete process.env.MSYSTEM;
+    delete process.env.OSTYPE;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const codexPs1Path = join(fakeBin, 'codex.ps1');
+      await writeFile(codexPs1Path, '');
+
+      const spec = buildWorkerProcessLaunchSpec(
+        'beta-team',
+        1,
+        ['--model', 'gpt-5'],
+        'C:\\workspace',
+        {},
+        'codex',
+      );
+
+      assert.match(spec.command, /powershell(?:\.exe)?$/i);
+      assert.deepEqual(spec.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+      assert.equal(spec.args[5], codexPs1Path);
+      assert.deepEqual(spec.args.slice(6), ['--model', 'gpt-5', '--dangerously-bypass-approvals-and-sandbox']);
+      assert.equal(spec.env.OMX_LEADER_CLI_PATH, codexPs1Path);
+      assert.notEqual(spec.command, codexPs1Path);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevPathext === 'string') process.env.PATHEXT = prevPathext;
+      else delete process.env.PATHEXT;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof prevOstype === 'string') process.env.OSTYPE = prevOstype;
+      else delete process.env.OSTYPE;
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevWslInterop === 'string') process.env.WSL_INTEROP = prevWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(fakeBin, { recursive: true, force: true });
     }
   });
 
@@ -1901,6 +2019,8 @@ esac
 
           const tmuxLog = await readFile(logPath, 'utf-8');
           assert.match(tmuxLog, /display-message -p #S:#I #{pane_id}/);
+          assert.match(tmuxLog, /powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand/);
+          assert.doesNotMatch(tmuxLog, /\/bin\/sh -lc/);
           assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
         },
       );

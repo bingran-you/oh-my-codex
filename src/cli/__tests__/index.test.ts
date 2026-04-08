@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -40,6 +40,7 @@ import {
   reapStaleNotifyFallbackWatcher,
   cleanupLaunchOrphanedMcpProcesses,
   reapPostLaunchOrphanedMcpProcesses,
+  cleanupPostLaunchModeStateFiles,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
   resolveNotifyFallbackWatcherScript,
@@ -404,6 +405,125 @@ describe("reapPostLaunchOrphanedMcpProcesses", () => {
     });
 
     assert.match(errors.join("\n"), /postLaunch MCP cleanup failed: Error: boom/);
+  });
+});
+
+describe("cleanupPostLaunchModeStateFiles", () => {
+  it("repairs empty or truncated mode state files and still cancels valid siblings", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-mode-cleanup-"));
+    const sessionId = "sess-postlaunch-cleanup";
+    const stateDir = join(wd, ".omx", "state");
+    const sessionStateDir = join(stateDir, "sessions", sessionId);
+    const partialState = '{\n  "active": true,\n  "mode": "ralph",\n';
+    const warnings: string[] = [];
+
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(
+      join(stateDir, "autopilot-state.json"),
+      JSON.stringify({ active: true, mode: "autopilot" }, null, 2),
+      "utf-8",
+    );
+    await writeFile(join(stateDir, "deep-interview-state.json"), "", "utf-8");
+    await writeFile(join(sessionStateDir, "ralph-state.json"), partialState, "utf-8");
+
+    await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+      writeWarn: (line) => warnings.push(line),
+    });
+
+    const autopilot = JSON.parse(
+      await readFile(join(stateDir, "autopilot-state.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    const deepInterview = JSON.parse(
+      await readFile(join(stateDir, "deep-interview-state.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    const ralph = JSON.parse(
+      await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    assert.equal(autopilot.active, false);
+    assert.equal(typeof autopilot.completed_at, "string");
+    assert.equal(deepInterview.active, false);
+    assert.equal(deepInterview.mode, "deep-interview");
+    assert.equal(deepInterview.current_phase, "cancelled");
+    assert.equal(typeof deepInterview.completed_at, "string");
+    assert.equal(typeof deepInterview.last_turn_at, "string");
+    assert.equal(ralph.active, false);
+    assert.equal(ralph.mode, "ralph");
+    assert.equal(ralph.current_phase, "cancelled");
+    assert.equal(typeof ralph.completed_at, "string");
+    assert.equal(typeof ralph.last_turn_at, "string");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("retries a transient parse failure before cancelling the rewritten mode state", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-mode-retry-"));
+    const sessionId = "sess-postlaunch-retry";
+    const stateDir = join(wd, ".omx", "state");
+    const statePath = join(stateDir, "ralph-state.json");
+    const writes: Array<{ path: string; content: string }> = [];
+    const validState = JSON.stringify({ active: true, mode: "ralph" }, null, 2);
+    let reads = 0;
+
+    await mkdir(stateDir, { recursive: true });
+
+    const mockReaddir = (async (dir: unknown, _options: unknown) => (
+      String(dir) === stateDir ? ["ralph-state.json"] : []
+    )) as unknown as typeof fsReaddir;
+    const mockReadFile = (async (path: unknown, _options: unknown) => {
+        assert.equal(String(path), statePath);
+        reads += 1;
+        return reads === 1
+          ? '{\n  "active": true,\n  "mode": "ralph"'
+          : validState;
+      }) as unknown as typeof readFile;
+    const mockWriteFile = (async (path: unknown, content: unknown, _options: unknown) => {
+        writes.push({ path: String(path), content: String(content) });
+      }) as unknown as typeof writeFile;
+
+    const dependencies: Parameters<typeof cleanupPostLaunchModeStateFiles>[2] = {
+      readdir: mockReaddir,
+      readFile: mockReadFile,
+      writeFile: mockWriteFile,
+      sleep: async () => {},
+      now: () => new Date("2026-04-07T00:00:00.000Z"),
+    };
+
+    await cleanupPostLaunchModeStateFiles(wd, sessionId, dependencies);
+
+    assert.equal(reads, 2);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.path, statePath);
+    const persisted = JSON.parse(writes[0]?.content ?? "{}") as Record<string, unknown>;
+    assert.equal(persisted.active, false);
+    assert.equal(persisted.completed_at, "2026-04-07T00:00:00.000Z");
+  });
+
+  it("warns on structurally complete malformed JSON without aborting sibling cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-mode-malformed-"));
+    const sessionId = "sess-postlaunch-malformed";
+    const stateDir = join(wd, ".omx", "state");
+    const warnings: string[] = [];
+    const malformedState = '{\n  "active": true,\n}\n';
+
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "ralph-state.json"), malformedState, "utf-8");
+    await writeFile(
+      join(stateDir, "ultrawork-state.json"),
+      JSON.stringify({ active: true, mode: "ultrawork" }, null, 2),
+      "utf-8",
+    );
+
+    await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+      writeWarn: (line) => warnings.push(line),
+    });
+
+    const ultrawork = JSON.parse(
+      await readFile(join(stateDir, "ultrawork-state.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    assert.equal(ultrawork.active, false);
+    assert.equal(typeof ultrawork.completed_at, "string");
+    assert.equal(await readFile(join(stateDir, "ralph-state.json"), "utf-8"), malformedState);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /skipped malformed mode state .*ralph-state\.json/);
   });
 });
 

@@ -1925,6 +1925,162 @@ interface PostLaunchCleanupDependencies {
   writeError?: (line: string) => void;
 }
 
+interface PostLaunchModeCleanupDependencies {
+  readdir?: typeof import("fs/promises").readdir;
+  readFile?: typeof import("fs/promises").readFile;
+  writeFile?: typeof import("fs/promises").writeFile;
+  sleep?: (ms: number) => Promise<void>;
+  writeWarn?: (line: string) => void;
+  now?: () => Date;
+}
+
+type PostLaunchModeStateReadResult =
+  | { kind: "ok"; state: Record<string, unknown> }
+  | { kind: "missing" | "recoverable" }
+  | { kind: "malformed"; message: string };
+
+const POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS = 10;
+const POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS = 2;
+
+function isLikelyTransientModeStateParseFailure(raw: string, err: unknown): boolean {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return true;
+  if (!(err instanceof SyntaxError)) return false;
+  if (!trimmed.startsWith("{") || trimmed.endsWith("}")) return false;
+  return (
+    /Unexpected end of JSON input/.test(err.message) ||
+    /Unterminated string in JSON/.test(err.message) ||
+    /Expected double-quoted property name in JSON/.test(err.message) ||
+    /Expected property name or '}' in JSON/.test(err.message) ||
+    /Expected ':' after property name in JSON/.test(err.message) ||
+    /Expected ',' or '}' after property value in JSON/.test(err.message)
+  );
+}
+
+async function readPostLaunchModeStateFile(
+  path: string,
+  dependencies: Pick<PostLaunchModeCleanupDependencies, "readFile" | "sleep"> = {},
+): Promise<PostLaunchModeStateReadResult> {
+  const readFile =
+    dependencies.readFile ?? (await import("fs/promises")).readFile;
+  const sleep =
+    dependencies.sleep
+    ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 1; attempt <= POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = await readFile(path, "utf-8");
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) {
+        if (attempt < POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS) {
+          await sleep(POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS);
+          continue;
+        }
+        return { kind: "recoverable" };
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (err) {
+        if (isLikelyTransientModeStateParseFailure(raw, err)) {
+          if (attempt < POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS) {
+            await sleep(POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS);
+            continue;
+          }
+          return { kind: "recoverable" };
+        }
+        return {
+          kind: "malformed",
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        return { kind: "malformed", message: "mode state must be a JSON object" };
+      }
+      return { kind: "ok", state: parsed as Record<string, unknown> };
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error?.code === "ENOENT") return { kind: "missing" };
+      return {
+        kind: "malformed",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  return { kind: "recoverable" };
+}
+
+function buildRecoveredPostLaunchModeState(
+  mode: string,
+  completedAt: string,
+): Record<string, unknown> {
+  return {
+    active: false,
+    mode,
+    current_phase: "cancelled",
+    completed_at: completedAt,
+    last_turn_at: completedAt,
+  };
+}
+
+export async function cleanupPostLaunchModeStateFiles(
+  cwd: string,
+  sessionId: string,
+  dependencies: PostLaunchModeCleanupDependencies = {},
+): Promise<void> {
+  const readdir =
+    dependencies.readdir ?? (await import("fs/promises")).readdir;
+  const writeFile =
+    dependencies.writeFile ?? (await import("fs/promises")).writeFile;
+  const writeWarn = dependencies.writeWarn ?? console.warn;
+  const now = dependencies.now ?? (() => new Date());
+  const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
+
+  for (const stateDir of scopedDirs) {
+    const files = await readdir(stateDir).catch(() => [] as string[]);
+    for (const file of files) {
+      if (!file.endsWith("-state.json") || file === "session.json") continue;
+      const path = join(stateDir, file);
+      const mode = file.slice(0, -"-state.json".length);
+      const result = await readPostLaunchModeStateFile(path, dependencies);
+      if (result.kind !== "ok") {
+        if (result.kind === "recoverable") {
+          try {
+            const completedAt = now().toISOString();
+            await writeFile(
+              path,
+              JSON.stringify(buildRecoveredPostLaunchModeState(mode, completedAt), null, 2),
+            );
+          } catch (err) {
+            writeWarn(
+              `[omx] postLaunch: failed to recover mode state ${path}: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        } else if (result.kind === "malformed") {
+          writeWarn(
+            `[omx] postLaunch: skipped malformed mode state ${path}: ${result.message}`,
+          );
+        }
+        continue;
+      }
+      if (result.state.active !== true) continue;
+
+      try {
+        result.state.active = false;
+        result.state.completed_at = now().toISOString();
+        await writeFile(path, JSON.stringify(result.state, null, 2));
+      } catch (err) {
+        writeWarn(
+          `[omx] postLaunch: failed to update mode state ${path}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+  }
+}
+
 export async function reapPostLaunchOrphanedMcpProcesses(
   dependencies: PostLaunchCleanupDependencies = {},
 ): Promise<void> {
@@ -2536,22 +2692,7 @@ async function postLaunch(
 
   // 3. Cancel any still-active modes
   try {
-    const { readdir, writeFile, readFile } = await import("fs/promises");
-    const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
-    for (const stateDir of scopedDirs) {
-      const files = await readdir(stateDir).catch(() => [] as string[]);
-      for (const file of files) {
-        if (!file.endsWith("-state.json") || file === "session.json") continue;
-        const path = join(stateDir, file);
-        const content = await readFile(path, "utf-8");
-        const state = JSON.parse(content);
-        if (state.active) {
-          state.active = false;
-          state.completed_at = new Date().toISOString();
-          await writeFile(path, JSON.stringify(state, null, 2));
-        }
-      }
-    }
+    await cleanupPostLaunchModeStateFiles(cwd, sessionId);
   } catch (err) {
     console.error(
       `[omx] postLaunch: mode cleanup failed: ${err instanceof Error ? err.message : err}`,

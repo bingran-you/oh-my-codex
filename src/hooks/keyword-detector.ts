@@ -17,6 +17,11 @@ import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresh
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
+import {
+  SKILL_ACTIVE_STATE_FILE,
+  writeSkillActiveStateCopies,
+  type SkillActiveEntry,
+} from '../state/skill-active.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -53,8 +58,10 @@ export interface SkillActiveState {
   thread_id?: string;
   turn_id?: string;
   input_lock?: DeepInterviewInputLock;
+  active_skills?: SkillActiveEntry[];
   initialized_mode?: string;
   initialized_state_path?: string;
+  [key: string]: unknown;
 }
 
 export interface RecordSkillActivationInput {
@@ -66,7 +73,6 @@ export interface RecordSkillActivationInput {
   nowIso?: string;
 }
 
-export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
 export const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'] as const;
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
@@ -132,6 +138,20 @@ async function readExistingSkillState(statePath: string): Promise<SkillActiveSta
   } catch {
     return null;
   }
+}
+
+function buildActiveSkills(state: SkillActiveState): SkillActiveEntry[] | undefined {
+  if (!state.active) return undefined;
+  return [{
+    skill: state.skill,
+    phase: state.phase,
+    active: true,
+    activated_at: state.activated_at,
+    updated_at: state.updated_at,
+    session_id: state.session_id,
+    thread_id: state.thread_id,
+    turn_id: state.turn_id,
+  }];
 }
 
 async function readExistingDeepInterviewState(statePath: string): Promise<DeepInterviewModeState | null> {
@@ -422,11 +442,12 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       session_id: input.sessionId ?? previous?.session_id,
       thread_id: input.threadId ?? previous?.thread_id,
       turn_id: input.turnId ?? previous?.turn_id,
+      active_skills: [],
       ...(previous?.input_lock ? { input_lock: releaseDeepInterviewInputLock(previous.input_lock, nowIso, 'abort') } : {}),
     };
 
     try {
-      await writeFile(statePath, JSON.stringify(state, null, 2));
+      await writeSkillActiveStateCopies(dirname(dirname(input.stateDir)), state, input.sessionId);
       await persistDeepInterviewModeState(input.stateDir, state, nowIso, previous, input);
     } catch (error) {
       console.warn('[omx] warning: failed to persist keyword activation state', error);
@@ -454,12 +475,23 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     session_id: input.sessionId,
     thread_id: input.threadId,
     turn_id: input.turnId,
+    active_skills: [{
+      skill: match.skill,
+      phase: 'planning',
+      active: true,
+      activated_at: sameSkill && sameKeyword ? previous?.activated_at : nowIso,
+      updated_at: nowIso,
+      session_id: input.sessionId,
+      thread_id: input.threadId,
+      turn_id: input.turnId,
+    }],
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
   };
 
   try {
     const nextState = await persistStatefulSkillSeedState(input.stateDir, state, nowIso, previous);
-    await writeFile(statePath, JSON.stringify(nextState, null, 2));
+    nextState.active_skills = buildActiveSkills(nextState);
+    await writeSkillActiveStateCopies(dirname(dirname(input.stateDir)), nextState, input.sessionId);
     await persistDeepInterviewModeState(input.stateDir, nextState, nowIso, previous, input);
     return nextState;
   } catch (error) {

@@ -7,11 +7,11 @@ import {
   detectKeywords,
   detectPrimaryKeyword,
   recordSkillActivation,
-  SKILL_ACTIVE_STATE_FILE,
   DEEP_INTERVIEW_STATE_FILE,
   DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
   DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
 } from '../keyword-detector.js';
+import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
 
@@ -226,6 +226,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result.skill, 'autopilot');
       assert.equal(result.phase, 'planning');
       assert.equal(result.active, true);
+      assert.deepEqual(result.active_skills, [{
+        skill: 'autopilot',
+        phase: 'planning',
+        active: true,
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        session_id: 'sess-1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+      }]);
       assert.equal(result.initialized_mode, 'autopilot');
       assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-1/autopilot-state.json');
 
@@ -233,12 +243,28 @@ describe('keyword detector skill-active-state lifecycle', () => {
         skill: string;
         phase: string;
         active: boolean;
+        active_skills?: Array<{ skill: string; session_id?: string }>;
         initialized_mode?: string;
       };
       assert.equal(persisted.skill, 'autopilot');
       assert.equal(persisted.phase, 'planning');
       assert.equal(persisted.active, true);
+      assert.deepEqual(persisted.active_skills, [{
+        skill: 'autopilot',
+        phase: 'planning',
+        active: true,
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        session_id: 'sess-1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+      }]);
       assert.equal(persisted.initialized_mode, 'autopilot');
+
+      const sessionScopedSkillState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-1', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
+      assert.deepEqual(sessionScopedSkillState.active_skills, persisted.active_skills);
 
       const modeState = JSON.parse(await readFile(join(stateDir, 'sessions', 'sess-1', 'autopilot-state.json'), 'utf-8')) as {
         mode: string;

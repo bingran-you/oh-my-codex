@@ -5,8 +5,8 @@
 /** Ralph loop state for HUD display */
 export interface RalphStateForHud {
   active: boolean;
-  iteration: number;
-  max_iterations: number;
+  iteration?: number;
+  max_iterations?: number;
 }
 
 /** Ultrawork state for HUD display */

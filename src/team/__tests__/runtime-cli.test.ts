@@ -162,6 +162,118 @@ describe('runtime-cli helpers', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('preserves team state when building terminal output for completed teams', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-preserve-complete-'));
+    try {
+      await initTeamState('runtime-cli-preserve-complete', 'task', 'executor', 1, cwd);
+      await createTask('runtime-cli-preserve-complete', {
+        subject: 'done task',
+        description: 'already complete',
+        status: 'completed',
+        owner: 'worker-1',
+        result: 'PASS: complete without shutdown',
+      }, cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'runtime-cli-preserve-complete');
+      assert.equal(existsSync(teamRoot), true);
+
+      const runtimeCli = await loadRuntimeCliModule();
+      const result = runtimeCli.buildTerminalCliResult(
+        runtimeCli.resolveRuntimeCliStateRoot(cwd),
+        'runtime-cli-preserve-complete',
+        'complete',
+        1,
+        Date.now() - 1_000,
+      );
+
+      assert.equal(existsSync(teamRoot), true);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.output.status, 'completed');
+      assert.equal(result.output.teamName, 'runtime-cli-preserve-complete');
+      assert.deepEqual(result.output.taskResults, [{
+        taskId: '1',
+        status: 'completed',
+        summary: 'PASS: complete without shutdown',
+      }]);
+      assert.match(result.notice, /preserving team state/i);
+      assert.match(result.notice, /omx team shutdown runtime-cli-preserve-complete/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves team state when building terminal output for failed teams', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-preserve-failed-'));
+    try {
+      await initTeamState('runtime-cli-preserve-failed', 'task', 'executor', 1, cwd);
+      await createTask('runtime-cli-preserve-failed', {
+        subject: 'failed task',
+        description: 'needs postmortem',
+        status: 'failed',
+        owner: 'worker-1',
+        result: 'FAIL: worker crashed',
+      }, cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'runtime-cli-preserve-failed');
+      assert.equal(existsSync(teamRoot), true);
+
+      const runtimeCli = await loadRuntimeCliModule();
+      const result = runtimeCli.buildTerminalCliResult(
+        runtimeCli.resolveRuntimeCliStateRoot(cwd),
+        'runtime-cli-preserve-failed',
+        'failed',
+        1,
+        Date.now() - 1_000,
+      );
+
+      assert.equal(existsSync(teamRoot), true);
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.output.status, 'failed');
+      assert.equal(result.output.teamName, 'runtime-cli-preserve-failed');
+      assert.deepEqual(result.output.taskResults, [{
+        taskId: '1',
+        status: 'failed',
+        summary: 'FAIL: worker crashed',
+      }]);
+      assert.match(result.notice, /preserving team state/i);
+      assert.match(result.notice, /omx team shutdown runtime-cli-preserve-failed/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports cancelled terminal phases without deleting team state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-preserve-cancelled-'));
+    try {
+      await initTeamState('runtime-cli-preserve-cancelled', 'task', 'executor', 1, cwd);
+      await createTask('runtime-cli-preserve-cancelled', {
+        subject: 'cancelled task',
+        description: 'team stopped for inspection',
+        status: 'blocked',
+      }, cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'runtime-cli-preserve-cancelled');
+      assert.equal(existsSync(teamRoot), true);
+
+      const runtimeCli = await loadRuntimeCliModule();
+      const result = runtimeCli.buildTerminalCliResult(
+        runtimeCli.resolveRuntimeCliStateRoot(cwd),
+        'runtime-cli-preserve-cancelled',
+        'cancelled',
+        1,
+        Date.now() - 1_000,
+      );
+
+      assert.equal(existsSync(teamRoot), true);
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.output.status, 'failed');
+      assert.match(result.notice, /phase=cancelled/);
+      assert.match(result.notice, /omx team shutdown runtime-cli-preserve-cancelled/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 

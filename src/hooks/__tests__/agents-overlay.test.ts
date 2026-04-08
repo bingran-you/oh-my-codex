@@ -366,6 +366,35 @@ describe("resolveSessionOrchestrationMode", () => {
     const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
     assert.equal(mode, "team");
   });
+
+  it("active mode summary follows canonical session skill state instead of stale root mode files", async () => {
+    const sessionId = "sess-active-summary";
+    const rootStateDir = join(tempDir, ".omx", "state");
+    const sessionDir = join(rootStateDir, "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(rootStateDir, "ralph-state.json"),
+      JSON.stringify({ active: true, iteration: 9, max_iterations: 10, current_phase: "stale-root" }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+        active_skills: [{ skill: "team", phase: "running", active: true, session_id: sessionId }],
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "team-state.json"),
+      JSON.stringify({ active: true, team_name: "delta" }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.ok(overlay.includes("- team: phase: running"));
+    assert.equal(overlay.includes("ralph"), false);
+  });
 });
 
 describe("applyOverlay + stripOverlay roundtrip", () => {

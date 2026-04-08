@@ -104,6 +104,13 @@ describe('renderHud – ralph', () => {
     assert.ok(result.includes('ralph:3/10'));
   });
 
+  it('falls back to a bare label when Ralph counters are unavailable', () => {
+    const ctx = { ...emptyCtx(), ralph: { active: true } };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('ralph'));
+    assert.equal(result.includes('ralph:'), false);
+  });
+
   it('omits ralph when null', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('ralph'));

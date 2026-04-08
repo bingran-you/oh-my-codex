@@ -252,4 +252,101 @@ describe('state-server directory initialization', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('syncs canonical skill-active state for tracked mode writes and clears', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-canonical-'));
+    try {
+      await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-sync',
+            mode: 'ralph',
+            active: true,
+            iteration: 1,
+            max_iterations: 3,
+            current_phase: 'executing',
+          },
+        },
+      });
+
+      const canonicalPath = join(wd, '.omx', 'state', 'sessions', 'sess-sync', 'skill-active-state.json');
+      const canonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
+        active_skills?: Array<{ skill: string; session_id?: string; activated_at?: string; updated_at?: string }>;
+      };
+      assert.deepEqual(canonical.active_skills, [{
+        skill: 'ralph',
+        phase: 'executing',
+        active: true,
+        activated_at: canonical.active_skills?.[0]?.activated_at,
+        updated_at: canonical.active_skills?.[0]?.updated_at,
+        session_id: 'sess-sync',
+      }]);
+
+      await handleStateToolCall({
+        params: {
+          name: 'state_clear',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-sync',
+            mode: 'ralph',
+          },
+        },
+      });
+
+      const clearedCanonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
+        active: boolean;
+        active_skills?: unknown[];
+      };
+      assert.equal(clearedCanonical.active, false);
+      assert.deepEqual(clearedCanonical.active_skills, []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes tracked workflows from canonical skill-active state on all_sessions clear', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-canonical-clear-all-'));
+    try {
+      await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'team',
+            active: true,
+            current_phase: 'running',
+          },
+        },
+      });
+
+      await handleStateToolCall({
+        params: {
+          name: 'state_clear',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'team',
+            all_sessions: true,
+          },
+        },
+      });
+
+      const canonicalPath = join(wd, '.omx', 'state', 'skill-active-state.json');
+      const canonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
+        active: boolean;
+        active_skills?: unknown[];
+      };
+      assert.equal(canonical.active, false);
+      assert.deepEqual(canonical.active_skills, []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

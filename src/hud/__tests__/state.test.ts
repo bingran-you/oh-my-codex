@@ -6,6 +6,7 @@ import { basename, join, relative } from 'node:path';
 import {
   buildGitBranchLabel,
   readGitBranch,
+  readAllState,
   readRalphState,
   readRalplanState,
   readDeepInterviewState,
@@ -317,6 +318,64 @@ describe('additional HUD mode state readers', () => {
     await withTempRepo('omx-hud-ultraqa-', async (cwd) => {
       await writeModeState(cwd, 'ultraqa', { active: true, current_phase: 'diagnose' });
       assert.deepEqual(await readUltraqaState(cwd), { active: true, current_phase: 'diagnose' });
+    });
+  });
+});
+
+describe('readAllState canonical skill precedence', () => {
+  it('does not surface stale session mode detail when canonical skill state is inactive in legacy shape', async () => {
+    await withTempRepo('omx-hud-canonical-inactive-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-canonical-off';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: false,
+        skill: 'ralph',
+        phase: 'completing',
+        session_id: sessionId,
+      }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        iteration: 2,
+        max_iterations: 5,
+        current_phase: 'executing',
+      }));
+
+      const state = await readAllState(cwd);
+      assert.equal(state.ralph, null);
+    });
+  });
+
+  it('uses canonical session skill state to suppress stale root fallback while preserving session detail', async () => {
+    await withTempRepo('omx-hud-canonical-session-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-current';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        iteration: 9,
+        max_iterations: 10,
+        current_phase: 'stale-root',
+      }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'team',
+        phase: 'running',
+        session_id: sessionId,
+        active_skills: [{ skill: 'team', phase: 'running', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'alpha',
+      }));
+
+      const state = await readAllState(cwd);
+      assert.equal(state.ralph, null);
+      assert.deepEqual(state.team, { active: true, team_name: 'alpha', current_phase: 'running' });
     });
   });
 });

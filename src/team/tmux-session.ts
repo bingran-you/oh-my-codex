@@ -20,7 +20,12 @@ import {
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
-import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
+import {
+  buildPlatformCommandSpec,
+  classifySpawnError,
+  resolveCommandPathForPlatform,
+  spawnPlatformCommandSync,
+} from '../utils/platform-command.js';
 import { resolveOmxEntryPath } from '../utils/paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -270,6 +275,14 @@ async function isWorkerAliveAsync(sessionName: string, workerIndex: number, work
 
 function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function encodePowerShellCommand(commandText: string): string {
+  return Buffer.from(commandText, 'utf16le').toString('base64');
 }
 
 function normalizeTmuxHookToken(value: string): string {
@@ -690,8 +703,30 @@ export function buildWorkerStartupCommand(
     workerCliOverride,
     initialPrompt,
   );
+  const resolvedLeaderNodePath = resolveLeaderNodePath();
+  const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
+    ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
+    : '';
+  if (isNativeWindows()) {
+    const pathBootstrap = leaderNodeDir
+      ? `$env:PATH = ${quotePowerShellArg(`${leaderNodeDir};`)} + $env:PATH`
+      : '';
+    const envAssignments = Object.entries(processSpec.env)
+      .map(([key, value]) => `$env:${key} = ${quotePowerShellArg(value)}`)
+      .join('; ');
+    const invocation = ['&', quotePowerShellArg(processSpec.command), ...processSpec.args.map(quotePowerShellArg)].join(' ');
+    const encodedCommand = encodePowerShellCommand(
+      [
+        "$ErrorActionPreference = 'Stop'",
+        pathBootstrap,
+        envAssignments,
+        invocation,
+      ].filter(Boolean).join('; '),
+    );
+    return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+  }
+
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
-  const leaderNodeDir = resolveLeaderNodePath().replace(/\/[^/]+$/, ''); // dirname
   const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
   const cliInvocation = quotedArgs.length > 0 ? `exec ${processSpec.command} ${quotedArgs}` : `exec ${processSpec.command}`;
@@ -726,6 +761,9 @@ export function buildWorkerProcessLaunchSpec(
     : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
+  const platformSpec = isNativeWindows()
+    ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
+    : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
@@ -744,8 +782,8 @@ export function buildWorkerProcessLaunchSpec(
 
   return {
     workerCli,
-    command: resolvedCliPath,
-    args: effectiveCliLaunchArgs,
+    command: platformSpec.command,
+    args: platformSpec.args,
     env: workerEnv,
   };
 }

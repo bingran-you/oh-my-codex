@@ -39,6 +39,14 @@ interface CliOutput {
   workerCount: number;
 }
 
+export type TerminalPhaseResult = 'complete' | 'failed' | 'cancelled';
+
+export interface TerminalCliResult {
+  output: CliOutput;
+  exitCode: number;
+  notice: string;
+}
+
 export interface LivePaneState {
   paneIds: string[];
   leaderPaneId: string;
@@ -122,6 +130,39 @@ export function collectTaskResults(stateRoot: string, teamName: string): TaskRes
   }
 }
 
+export function buildCliOutput(
+  stateRoot: string,
+  teamName: string,
+  status: 'completed' | 'failed',
+  workerCount: number,
+  startTimeMs: number,
+): CliOutput {
+  const taskResults = collectTaskResults(stateRoot, teamName);
+  const duration = (Date.now() - startTimeMs) / 1000;
+  return {
+    status,
+    teamName,
+    taskResults,
+    duration,
+    workerCount,
+  };
+}
+
+export function buildTerminalCliResult(
+  stateRoot: string,
+  teamName: string,
+  phase: TerminalPhaseResult,
+  workerCount: number,
+  startTimeMs: number,
+): TerminalCliResult {
+  const status = phase === 'complete' ? 'completed' : 'failed';
+  return {
+    output: buildCliOutput(stateRoot, teamName, status, workerCount, startTimeMs),
+    exitCode: status === 'completed' ? 0 : 1,
+    notice: `[runtime-cli] phase=${phase} reached terminal state; preserving team state for inspection. Run "omx team shutdown ${teamName}" when explicit cleanup is desired.\n`,
+  };
+}
+
 export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWorkerProvider[] {
   const providers = raw.map((entry) => String(entry || '').trim().toLowerCase());
   const invalid = providers.filter((entry) => entry !== 'codex' && entry !== 'claude' && entry !== 'gemini');
@@ -178,18 +219,11 @@ async function main(): Promise<void> {
   let finalStatus: 'completed' | 'failed' = 'failed';
   let pollActive = true;
 
-  function exitCodeFor(status: 'completed' | 'failed'): number {
-    return status === 'completed' ? 0 : 1;
-  }
-
   async function doShutdown(status: 'completed' | 'failed'): Promise<void> {
     pollActive = false;
     finalStatus = status;
 
-    // 1. Collect task results
-    const taskResults = collectTaskResults(stateRoot, teamName);
-
-    // 2. Shutdown team
+    // 1. Shutdown team
     let shutdownSummary: TeamShutdownSummary | null = null;
     if (runtime) {
       try {
@@ -209,20 +243,22 @@ async function main(): Promise<void> {
       process.stderr.write(`[runtime-cli] commit_hygiene_context_md=${shutdownSummary.commitHygieneArtifacts.markdownPath}\n`);
     }
 
-    const duration = (Date.now() - startTime) / 1000;
-    const output: CliOutput = {
-      status: finalStatus,
-      teamName,
-      taskResults,
-      duration,
-      workerCount,
-    };
+    const output = buildCliOutput(stateRoot, teamName, finalStatus, workerCount, startTime);
 
-    // 3. Write result to stdout
+    // 2. Write result to stdout
     process.stdout.write(JSON.stringify(output) + '\n');
 
-    // 4. Exit
-    process.exit(exitCodeFor(status));
+    // 3. Exit
+    process.exit(status === 'completed' ? 0 : 1);
+  }
+
+  function exitWithoutShutdown(phase: TerminalPhaseResult): void {
+    pollActive = false;
+    finalStatus = phase === 'complete' ? 'completed' : 'failed';
+    const result = buildTerminalCliResult(stateRoot, teamName, phase, workerCount, startTime);
+    process.stderr.write(result.notice);
+    process.stdout.write(JSON.stringify(result.output) + '\n');
+    process.exit(result.exitCode);
   }
 
   // Register signal handlers before poll loop
@@ -318,11 +354,11 @@ async function main(): Promise<void> {
 
     // Check completion
     if (snap.phase === 'complete') {
-      await doShutdown('completed');
+      exitWithoutShutdown('complete');
       return;
     }
     if (snap.phase === 'failed' || snap.phase === 'cancelled') {
-      await doShutdown('failed');
+      exitWithoutShutdown(snap.phase);
       return;
     }
 
@@ -338,7 +374,9 @@ async function main(): Promise<void> {
 
     if (deadWorkerFailure || fixingWithNoWorkers) {
       process.stderr.write(`[runtime-cli] Failure detected: deadWorkerFailure=${deadWorkerFailure} fixingWithNoWorkers=${fixingWithNoWorkers}\n`);
-      await doShutdown('failed');
+      // Monitor-detected failure is still not an explicit shutdown request.
+      // Preserve team state for inspection and let the leader decide when to clean up.
+      exitWithoutShutdown('failed');
       return;
     }
   }

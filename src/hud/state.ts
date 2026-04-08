@@ -14,6 +14,7 @@ import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getReadScopedStatePaths } from '../mcp/state-paths.js';
+import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
 import type {
   RalphStateForHud,
   UltraworkStateForHud,
@@ -48,6 +49,23 @@ async function readScopedModeState<T>(cwd: string, mode: string): Promise<T | nu
     const state = await readJsonFile<T>(candidate);
     if (state) return state;
   }
+  return null;
+}
+
+async function readSessionAwareModeState<T>(cwd: string, mode: string): Promise<T | null> {
+  const candidates = await getReadScopedStatePaths(mode, cwd);
+  const session = await readSessionState(cwd);
+
+  if (session?.session_id) {
+    if (candidates.length === 0) return null;
+    return readJsonFile<T>(candidates[0]);
+  }
+
+  for (const candidate of candidates) {
+    const state = await readJsonFile<T>(candidate);
+    if (state) return state;
+  }
+
   return null;
 }
 
@@ -317,25 +335,91 @@ export function buildGitBranchLabel(
   return repoLabel ? `${repoLabel}/${branch}` : branch;
 }
 
+function canonicalPhaseForSkill(
+  canonicalSkills: Map<string, { phase?: string }>,
+  skill: string,
+): string | undefined {
+  return canonicalSkills.get(skill)?.phase;
+}
+
+function mergePhase<T extends { active?: boolean; current_phase?: string }>(
+  detail: T | null,
+  canonicalPhase?: string,
+): T | null {
+  if (detail?.active === true) {
+    if (!canonicalPhase || detail.current_phase) return detail;
+    return { ...detail, current_phase: canonicalPhase };
+  }
+  if (!canonicalPhase) return null;
+  return { active: true, current_phase: canonicalPhase } as T;
+}
+
 /** Read all state files and build the full render context */
 export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFAULT_HUD_CONFIG): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = buildGitBranchLabel(cwd, config);
+  const [metrics, hudNotify, session] = await Promise.all([
+    readMetrics(cwd),
+    readHudNotifyState(cwd),
+    readSessionState(cwd),
+  ]);
+  const canonicalSkillState = await readVisibleSkillActiveState(cwd, session?.session_id);
+  const canonicalSkills = new Map(
+    listActiveSkills(canonicalSkillState).map((entry) => [entry.skill, entry] as const),
+  );
+  const useCompatibilityFallback = canonicalSkillState == null;
 
-  const [ralph, ultrawork, autopilot, ralplan, deepInterview, autoresearch, ultraqa, team, metrics, hudNotify, session] =
-    await Promise.all([
-      readRalphState(cwd),
-      readUltraworkState(cwd),
-      readAutopilotState(cwd),
-      readRalplanState(cwd),
-      readDeepInterviewState(cwd),
-      readAutoresearchState(cwd),
-      readUltraqaState(cwd),
-      readTeamState(cwd),
-      readMetrics(cwd),
-      readHudNotifyState(cwd),
-      readSessionState(cwd),
-    ]);
+  const [
+    ralphDetail,
+    ultraworkDetail,
+    autopilotDetail,
+    ralplanDetail,
+    deepInterviewDetail,
+    autoresearchDetail,
+    ultraqaDetail,
+    teamDetail,
+  ] = await Promise.all([
+    readSessionAwareModeState<RalphStateForHud>(cwd, 'ralph'),
+    readSessionAwareModeState<UltraworkStateForHud>(cwd, 'ultrawork'),
+    readSessionAwareModeState<AutopilotStateForHud>(cwd, 'autopilot'),
+    readSessionAwareModeState<RalplanStateForHud>(cwd, 'ralplan'),
+    readSessionAwareModeState<DeepInterviewRawState>(cwd, 'deep-interview'),
+    readSessionAwareModeState<AutoresearchStateForHud>(cwd, 'autoresearch'),
+    readSessionAwareModeState<UltraqaStateForHud>(cwd, 'ultraqa'),
+    readSessionAwareModeState<TeamStateForHud>(cwd, 'team'),
+  ]);
+
+  const ralph = canonicalSkills.has('ralph') || useCompatibilityFallback
+    ? (ralphDetail?.active === true ? mergePhase(ralphDetail, canonicalPhaseForSkill(canonicalSkills, 'ralph')) : null)
+    : null;
+  const ultrawork = canonicalSkills.has('ultrawork') || useCompatibilityFallback
+    ? mergePhase(ultraworkDetail?.active === true ? ultraworkDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultrawork'))
+    : null;
+  const autopilot = canonicalSkills.has('autopilot') || useCompatibilityFallback
+    ? mergePhase(autopilotDetail?.active === true ? autopilotDetail : null, canonicalPhaseForSkill(canonicalSkills, 'autopilot'))
+    : null;
+  const ralplan = canonicalSkills.has('ralplan') || useCompatibilityFallback
+    ? mergePhase(ralplanDetail?.active === true ? ralplanDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralplan'))
+    : null;
+  const deepInterview = canonicalSkills.has('deep-interview') || useCompatibilityFallback
+    ? (() => {
+      const merged = mergePhase(
+        deepInterviewDetail?.active === true ? {
+          ...deepInterviewDetail,
+          input_lock_active: deepInterviewDetail.input_lock_active ?? deepInterviewDetail.input_lock?.active === true,
+        } : null,
+        canonicalPhaseForSkill(canonicalSkills, 'deep-interview'),
+      );
+      return merged;
+    })()
+    : null;
+  const ultraqa = canonicalSkills.has('ultraqa') || useCompatibilityFallback
+    ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
+    : null;
+  const team = canonicalSkills.has('team') || useCompatibilityFallback
+    ? mergePhase(teamDetail?.active === true ? teamDetail : null, canonicalPhaseForSkill(canonicalSkills, 'team'))
+    : null;
+  const autoresearch = autoresearchDetail?.active === true ? autoresearchDetail : null;
 
   // When the Rust runtime bridge is enabled, prefer Rust-authored snapshot
   // for authority/backlog/readiness display over JS-inferred state.

@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-04-08
+
+Patch release for the `v0.12.1..v0.12.2` train: Windows team worker boot and shutdown hardening, postLaunch mode-state shutdown-race recovery, canonical HUD skill-state visibility, and team state preservation on monitor-driven exits.
+
+### Fixed
+- **Windows split-pane shutdown safety** — `omx team shutdown --force` no longer kills the leader pane on native Windows + psmux split-pane sessions by skipping the process-tree prekill step when leader/client ancestry overlaps. (PR [#1358](https://github.com/Yeachan-Heo/oh-my-codex/pull/1358))
+- **PostLaunch mode-state shutdown race** — empty or truncated mode-state JSON left by concurrent writers during session exit is now recovered into a minimal inactive record instead of crashing cleanup; structurally complete malformed JSON is warned but left untouched. (PR [#1360](https://github.com/Yeachan-Heo/oh-my-codex/pull/1360))
+- **Windows psmux worker boot** — native Windows team workers now launch through an explicit PowerShell path instead of being routed through POSIX `/bin/sh -lc`, which caused workers to never report ready. (PR [#1362](https://github.com/Yeachan-Heo/oh-my-codex/pull/1362))
+- **Stale HUD workflow badges** — canonical session-scoped skill-active state now drives HUD badge visibility, suppressing stale root-only mode badges that outlived their session while preserving backward compatibility for legacy single-skill readers. (PR [#1367](https://github.com/Yeachan-Heo/oh-my-codex/pull/1367))
+- **Team state silently deleted** — monitor-detected terminal and failure conditions in `runtime-cli` no longer trigger shutdown cleanup; team state is preserved until operators explicitly request shutdown. (PR [#1369](https://github.com/Yeachan-Heo/oh-my-codex/pull/1369))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes are aligned to `0.12.2`.
+
+### Verified
+- `npm run build`
+- `npm run lint`
+- `npm test`
+- `npm run smoke:packed-install`
+
 ## [0.12.1] - 2026-04-07
 
 Patch release for the `v0.12.0..v0.12.1` train: team-runtime hygiene, launch/cleanup follow-through, notify-fallback hardening, and release-collateral sync.
