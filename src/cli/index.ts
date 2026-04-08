@@ -16,6 +16,7 @@ import { hudCommand } from "../hud/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
+import { stateCommand } from "./state.js";
 import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
@@ -147,6 +148,7 @@ Usage:
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
+  omx state     Read/write/list OMX mode state via CLI parity surface
   omx sparkshell <command> [args...]
   omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
                 Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
@@ -246,6 +248,7 @@ type CliCommand =
   | "tmux-hook"
   | "hooks"
   | "hud"
+  | "state"
   | "status"
   | "cancel"
   | "help"
@@ -262,6 +265,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "exec",
   "hooks",
   "hud",
+  "state",
   "ralph",
   "resume",
   "session",
@@ -643,6 +647,7 @@ export async function main(args: string[]): Promise<void> {
     "tmux-hook",
     "hooks",
     "hud",
+    "state",
     "status",
     "cancel",
     "help",
@@ -735,6 +740,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "hud":
         await hudCommand(args.slice(1));
+        break;
+      case "state":
+        await stateCommand(args.slice(1));
         break;
       case "tmux-hook":
         await tmuxHookCommand(args.slice(1));
