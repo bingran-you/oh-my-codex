@@ -19,6 +19,7 @@ export type TeamDeliveryResult =
   | 'missing'
   | 'retry'
   | 'deferred'
+  | 'suppressed'
   | 'sent'
   | 'failed';
 
