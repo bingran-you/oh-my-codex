@@ -196,6 +196,32 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match.skill, 'deep-interview');
     assert.equal(match.keyword.toLowerCase(), 'deep interview');
   });
+
+  it('treats direct abort commands as cancel intent', () => {
+    const match = detectPrimaryKeyword('abort now');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'cancel');
+    assert.equal(match.keyword.toLowerCase(), 'abort');
+  });
+
+  it('treats direct stop commands as cancel intent', () => {
+    const match = detectPrimaryKeyword('stop now');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'cancel');
+    assert.equal(match.keyword.toLowerCase(), 'stop');
+  });
+
+  it('does not trigger cancel from incidental stop/abort test-log prose', () => {
+    assert.equal(detectPrimaryKeyword('FAIL should stop retrying after max attempts'), null);
+    assert.equal(detectPrimaryKeyword('PASS request aborted when upstream returns 499'), null);
+  });
+
+  it('does not trigger ultrawork from incidental parallel test-log prose', () => {
+    assert.equal(detectPrimaryKeyword('PASS runs assertions in parallel when sharding is enabled'), null);
+    assert.equal(detectPrimaryKeyword('running 8 tests in parallel across 4 workers'), null);
+  });
 });
 
 describe('keyword registry coverage', () => {

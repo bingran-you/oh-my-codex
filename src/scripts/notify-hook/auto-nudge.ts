@@ -347,6 +347,24 @@ function looksLikePermissionSeekingContinuation(normalizedText) {
   return matchesNormalizedPatterns(normalizedText, normalizePatternList(PERMISSION_SEEKING_STALL_PATTERNS));
 }
 
+/**
+ * Pattern to identify test-runner output lines (status symbols, PASS/FAIL prefixes).
+ * These lines may incidentally contain stall-pattern words inside test names and
+ * should be excluded before running stall detection on pane captures.
+ */
+const CAPTURE_TEST_LINE_RE = /^\s*(?:[✓✗✕×●✔✘▶◆○]|(?:PASS|FAIL|SKIP|ERROR)\s)/u;
+
+/**
+ * Strip lines that look like test-runner output so stall patterns inside test
+ * names (e.g. "✓ should continue with the next step") do not trigger a nudge.
+ */
+function filterCapturedTestLines(text) {
+  return safeString(text)
+    .split('\n')
+    .filter((line) => !CAPTURE_TEST_LINE_RE.test(line))
+    .join('\n');
+}
+
 function summarizePaneCaptureForLog(captured, maxLines = 6) {
   const lines = safeString(captured)
     .replace(/\r\n?/g, '\n')
@@ -516,7 +534,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
 
     if (!detected && paneId) {
       captured = await capturePane(paneId);
-      detected = detectStallPattern(captured, config.patterns, skillState?.phase);
+      detected = detectStallPattern(filterCapturedTestLines(captured), config.patterns, skillState?.phase);
       source = 'capture-pane';
     }
 

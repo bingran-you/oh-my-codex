@@ -548,6 +548,51 @@ describe('notify-hook auto-nudge', () => {
     });
   });
 
+  it('does not nudge from PASS/FAIL-style test output captured from the pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const captureFile = join(cwd, 'capture-output.txt');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeFile(
+        captureFile,
+        [
+          'PASS should continue with the next step when approvals are present',
+          'FAIL aborts the branch cleanly when the worker exits early',
+          'Test Suites: 1 failed, 1 total',
+        ].join('\n'),
+      );
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'clean output with no stall',
+      }, {
+        OMX_TEST_CAPTURE_FILE: captureFile,
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /capture-pane/, 'should still inspect capture-pane output');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'PASS/FAIL-style test output must not trigger a nudge');
+    });
+  });
+
   it('auto-nudges from active mode state by upgrading an anchored shell pane to the sibling codex pane', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

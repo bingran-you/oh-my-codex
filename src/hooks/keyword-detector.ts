@@ -353,9 +353,23 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm', 'stop', 'abort', 'parallel']);
 
-const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
+type IntentKeyword = 'team' | 'swarm' | 'stop' | 'abort' | 'parallel';
+
+/**
+ * Per-keyword intent patterns used when a keyword is in KEYWORDS_REQUIRING_INTENT.
+ *
+ * "team" / "swarm" require explicit orchestration phrasing so a generic
+ * reference in prose doesn't spin up the skill.
+ *
+ * "stop" / "abort" require a bare imperative or explicit OMX mode reference so
+ * test-log lines like "stop retrying" or "request aborted" do not trigger cancel.
+ *
+ * "parallel" requires an explicit instruction to run in parallel mode so that
+ * CI output like "running 8 tests in parallel" does not trigger ultrawork.
+ */
+const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
   team: [
     /(?:^|[^\w])\$(?:team)\b/i,
     /\/prompts:team\b/i,
@@ -367,6 +381,30 @@ const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
     /\/prompts:swarm\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?swarm\b/i,
     /\bswarm\s+(?:mode|orchestration|workflow|agents?)\b/i,
+  ],
+  stop: [
+    /^(?:please\s+)?stop(?:\s+now)?\s*[.!]?\s*$/i,
+    /\bcancelomx\b/i,
+    /(?:^|[^\w])\$(?:stop|cancel|abort)\b/i,
+    /\/(?:cancel|stop|abort)\b/i,
+    /\bstop\s+(?:the\s+)?(?:agent|ralph|autopilot|team|ultrawork|execution|current\s+(?:mode|task|run))\b/i,
+    /\b(?:cancel|stop)\s+(?:the\s+)?(?:active|running|current)\s+(?:mode|task|run|execution)\b/i,
+  ],
+  abort: [
+    /^(?:please\s+)?abort(?:\s+now)?\s*[.!]?\s*$/i,
+    /\bcancelomx\b/i,
+    /(?:^|[^\w])\$(?:stop|cancel|abort)\b/i,
+    /\/(?:cancel|stop|abort)\b/i,
+    /\babort\s+(?:the\s+)?(?:agent|ralph|autopilot|team|ultrawork|execution|current\s+(?:mode|task|run))\b/i,
+  ],
+  parallel: [
+    /(?:^|[^\w])\$(?:parallel|ultrawork|ulw)\b/i,
+    /\/(?:parallel|ultrawork)\b/i,
+    /\bultrawork\b/i,
+    /\bulw\b/i,
+    /\b(?:use|run|enable|start|activate|launch)\s+(?:in\s+)?parallel\b/i,
+    /\bparallel\s+(?:mode|execution|workers?|agents?|tasks?)\b/i,
+    /\brun\s+(?:tasks?|agents?|workers?)\s+in\s+parallel\b/i,
   ],
 };
 
@@ -415,9 +453,10 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
 }
 
 function hasIntentContextForKeyword(text: string, keyword: string): boolean {
-  if (!KEYWORDS_REQUIRING_INTENT.has(keyword.toLowerCase())) return true;
-  const k = keyword.toLowerCase() as 'team' | 'swarm';
-  return TEAM_SWARM_INTENT_PATTERNS[k].some((pattern) => pattern.test(text));
+  const k = keyword.toLowerCase();
+  if (!KEYWORDS_REQUIRING_INTENT.has(k)) return true;
+  const patterns = KEYWORD_INTENT_PATTERNS[k as IntentKeyword];
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 /**
