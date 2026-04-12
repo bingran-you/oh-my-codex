@@ -6,9 +6,9 @@
  */
 
 import { readFile, writeFile, mkdir, unlink, appendFile } from 'fs/promises';
-import { dirname, join, resolve as resolvePath } from 'path';
+import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { omxStateDir, omxLogsDir } from '../utils/paths.js';
+import { omxStateDir, omxLogsDir, sameFilePath } from '../utils/paths.js';
 import { getStateFilePath } from '../mcp/state-paths.js';
 
 export interface SessionState {
@@ -87,7 +87,7 @@ export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: stri
   if (!SESSION_ID_PATTERN.test(state.session_id)) return false;
 
   if (typeof state.cwd === 'string' && state.cwd.trim() !== '') {
-    return resolvePath(state.cwd) === resolvePath(cwd);
+    return sameFilePath(state.cwd, cwd);
   }
 
   return true;

@@ -33,6 +33,7 @@ import {
   readSubagentSessionSummary,
 } from '../subagents/tracker.js';
 import { listNotifyCanonicalActiveTeams } from './notify-hook/active-team.js';
+import { sameFilePath } from '../utils/paths.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -927,7 +928,7 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
 
   const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
   if (!existingRecord) return createAuthorityBackoffState('pid_missing');
-  if (existingRecord.cwd && resolve(existingRecord.cwd) !== cwd) return createAuthorityBackoffState('cwd_mismatch');
+  if (existingRecord.cwd && !sameFilePath(existingRecord.cwd, cwd)) return createAuthorityBackoffState('cwd_mismatch');
   if (!isPidAlive(existingRecord.pid)) {
     return createAuthorityBackoffState('pid_stale', {
       primary_pid: existingRecord.pid,

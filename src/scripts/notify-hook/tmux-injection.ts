@@ -8,6 +8,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { safeString, asNumber } from './utils.js';
+import { sameFilePath } from '../../utils/paths.js';
 import {
   readJsonIfExists,
   normalizeTmuxState,
@@ -35,7 +36,7 @@ async function resolvePaneCwdMismatch(paneId: string, expectedCwd: any): Promise
   try {
     const paneCwdResult = await runProcess('tmux', ['display-message', '-p', '-t', paneId, '#{pane_current_path}']);
     const paneCwd = safeString(paneCwdResult.stdout).trim();
-    if (paneCwd && resolvePath(paneCwd) !== resolvePath(expectedCwd)) {
+    if (paneCwd && !sameFilePath(paneCwd, expectedCwd)) {
       return {
         paneTarget: null,
         reason: 'pane_cwd_mismatch',

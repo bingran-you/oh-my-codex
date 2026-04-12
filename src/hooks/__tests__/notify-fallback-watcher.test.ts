@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -777,6 +777,59 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+
+
+  it('treats symlinked cwd aliases as the same primary watcher during authority handoff', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-cwd-alias-'));
+    const aliasWd = `${wd}-alias`;
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    try {
+      await symlink(wd, aliasWd, process.platform === 'win32' ? 'junction' : 'dir');
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeSessionStart(wd, 'sess-cwd-alias');
+      await writeFile(join(wd, '.omx', 'state', 'notify-fallback.pid'), JSON.stringify({
+        pid: process.pid,
+        cwd: wd,
+        started_at: new Date().toISOString(),
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), JSON.stringify({
+        pid: process.pid,
+        cwd: wd,
+        authority_only: false,
+        poll_ms: 250,
+        dispatch_drain: { last_tick_at: new Date().toISOString() },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--authority-only', '--cwd', aliasWd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+            OMX_SESSION_ID: 'sess-cwd-alias',
+            TMUX: '1',
+            TMUX_PANE: '%42',
+          }),
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const watcherState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), 'utf-8'));
+      assert.equal(watcherState.authority_backoff?.active, true);
+      assert.equal(watcherState.authority_backoff?.reason, 'primary_watcher_healthy');
+      assert.equal(watcherState.authority_backoff?.primary_pid, process.pid);
+    } finally {
+      await rm(aliasWd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 
   it('disables fallback watcher nudges when deep-interview state is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-deep-interview-suppressed-'));

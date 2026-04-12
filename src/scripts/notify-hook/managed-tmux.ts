@@ -1,9 +1,10 @@
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { basename, dirname, resolve as resolvePath } from 'path';
+import { basename, dirname } from 'path';
 import { readSessionState, isSessionStale } from '../../hooks/session.js';
 import { runProcess } from './process-runner.js';
 import { safeString } from './utils.js';
+import { sameFilePath } from '../../utils/paths.js';
 
 function sanitizeTmuxToken(value: string): string {
   const cleaned = safeString(value)
@@ -139,7 +140,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
     if (!sessionState) {
       return { managed: false, reason: 'missing_session_state', invocationSessionId, sessionState: null, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
     }
-    if (resolvePath(safeString(sessionState.cwd || cwd)) !== resolvePath(cwd)) {
+    if (!sameFilePath(safeString(sessionState.cwd || cwd), cwd)) {
       return { managed: false, reason: 'cwd_mismatch', invocationSessionId, sessionState, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
     }
     const canonicalSessionId = safeString(sessionState.session_id).trim();
@@ -152,7 +153,11 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
       return { managed: false, reason: 'stale_session', invocationSessionId, sessionState, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
     }
 
-    const expectedTmuxSessionName = buildExpectedManagedTmuxSessionName(cwd, canonicalSessionId || invocationSessionId);
+    const authoritativeSessionCwd = safeString(sessionState.cwd || cwd).trim() || cwd;
+    const expectedTmuxSessionName = buildExpectedManagedTmuxSessionName(
+      authoritativeSessionCwd,
+      canonicalSessionId || invocationSessionId,
+    );
     const currentTmuxSessionName = readCurrentTmuxSessionName();
     if (currentTmuxSessionName && currentTmuxSessionName === expectedTmuxSessionName) {
       return {

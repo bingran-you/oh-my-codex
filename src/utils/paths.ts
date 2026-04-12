@@ -30,6 +30,22 @@ function resolveLauncherPath(rawPath: string, baseCwd: string): string {
   }
 }
 
+export function canonicalizeComparablePath(rawPath: string): string {
+  const absolutePath = resolve(rawPath);
+  if (!existsSync(absolutePath)) return absolutePath;
+  try {
+    return typeof realpathSync.native === "function"
+      ? realpathSync.native(absolutePath)
+      : realpathSync(absolutePath);
+  } catch {
+    return absolutePath;
+  }
+}
+
+export function sameFilePath(leftPath: string, rightPath: string): boolean {
+  return canonicalizeComparablePath(leftPath) === canonicalizeComparablePath(rightPath);
+}
+
 export function resolveOmxEntryPath(
   options: {
     argv1?: string | null;

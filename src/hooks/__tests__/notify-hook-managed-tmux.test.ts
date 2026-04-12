@@ -1,12 +1,29 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveManagedSessionContext } from '../../scripts/notify-hook/managed-tmux.js';
+import { buildTmuxSessionName } from '../../cli/index.js';
+import { resolveManagedSessionContext, verifyManagedPaneTarget } from '../../scripts/notify-hook/managed-tmux.js';
 import { writeSessionStart } from '../session.js';
 
 describe('notify-hook managed tmux windows fallback', () => {
+  async function withFakeTmux(cwd: string, script: string, run: () => Promise<void>): Promise<void> {
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const fakeTmuxPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(fakeTmuxPath, script);
+    await chmod(fakeTmuxPath, 0o755);
+    process.env.PATH = `${fakeBinDir}:${previousPath || ''}`;
+    try {
+      await run();
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+    }
+  }
+
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   const originalTmux = process.env.TMUX;
   const originalTmuxPane = process.env.TMUX_PANE;
@@ -72,6 +89,75 @@ describe('notify-hook managed tmux windows fallback', () => {
       assert.equal(result.nativeSessionId, 'codex-native-session');
       assert.match(result.expectedTmuxSessionName, /omx-canonical-session|canonical-session/);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts symlinked cwd aliases for the same managed session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-cwd-alias-'));
+    const aliasCwd = `${cwd}-alias`;
+    try {
+      await symlink(cwd, aliasCwd, process.platform === 'win32' ? 'junction' : 'dir');
+      await writeSessionStart(cwd, 'omx-alias-session');
+
+      delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
+      process.env.OMX_TEAM_WORKER = '';
+
+      const result = await resolveManagedSessionContext(aliasCwd, { session_id: 'omx-alias-session' }, { allowTeamWorker: false });
+      assert.equal(result.managed, true);
+      assert.match(result.reason, /ancestry_match$/);
+      assert.equal(result.canonicalSessionId, 'omx-alias-session');
+      assert.equal(result.expectedTmuxSessionName, buildTmuxSessionName(cwd, 'omx-alias-session'));
+    } finally {
+      await rm(aliasCwd, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies managed pane targets when invoked from a cwd alias for the same session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-pane-alias-'));
+    const aliasCwd = `${cwd}-alias`;
+    const sessionId = 'omx-alias-session';
+    try {
+      await symlink(cwd, aliasCwd, process.platform === 'win32' ? 'junction' : 'dir');
+      await writeSessionStart(cwd, sessionId);
+
+      delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
+      process.env.OMX_TEAM_WORKER = '';
+
+      const managedSessionName = buildTmuxSessionName(cwd, sessionId);
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$target" == "%42" && "$format" == "#S" ]]; then
+    echo "${managedSessionName}"
+    exit 0
+  fi
+fi
+echo "unsupported tmux call: $cmd $*" >&2
+exit 1
+`, async () => {
+        const verdict = await verifyManagedPaneTarget('%42', aliasCwd, { session_id: sessionId }, { allowTeamWorker: false });
+        assert.equal(verdict.ok, true);
+        assert.equal(verdict.reason, 'ok');
+        assert.equal(verdict.paneSessionName, managedSessionName);
+        assert.equal(verdict.managedContext.expectedTmuxSessionName, managedSessionName);
+      });
+    } finally {
+      await rm(aliasCwd, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
     }
   });

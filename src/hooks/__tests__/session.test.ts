@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -80,6 +80,24 @@ describe('session lifecycle manager', () => {
       };
       assert.equal(hud.turn_count, 0);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('treats symlinked cwd aliases as authoritative for the same session state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-cwd-alias-'));
+    const aliasCwd = `${cwd}-alias`;
+    try {
+      await symlink(cwd, aliasCwd, process.platform === 'win32' ? 'junction' : 'dir');
+      await writeSessionStart(cwd, 'sess-alias');
+
+      const usable = await readUsableSessionState(aliasCwd);
+      assert.ok(usable);
+      assert.equal(usable?.session_id, 'sess-alias');
+      assert.equal(usable?.cwd, cwd);
+    } finally {
+      await rm(aliasCwd, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
     }
   });
