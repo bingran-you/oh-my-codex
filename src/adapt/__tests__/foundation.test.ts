@@ -11,6 +11,7 @@ import {
   initAdaptFoundation,
 } from "../index.js";
 import { resolveAdaptPaths } from "../paths.js";
+import { getAdaptTargetDescriptor } from "../registry.js";
 
 let tempDir: string;
 
@@ -95,5 +96,10 @@ describe("adapt foundation", () => {
     assert.equal(doctor.issues[0]?.code, "adapter_not_initialized");
     assert.match(doctor.nextSteps.join("\n"), /init --write/i);
     assert.match(doctor.nextSteps.join("\n"), /follow-on PR/i);
+  });
+
+  it("rejects inherited prototype-like targets during validation", () => {
+    assert.equal(getAdaptTargetDescriptor("__proto__"), null);
+    assert.equal(getAdaptTargetDescriptor("constructor"), null);
   });
 });

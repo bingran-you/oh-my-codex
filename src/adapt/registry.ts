@@ -105,7 +105,7 @@ export function listAdaptTargets(): AdaptTargetDescriptor[] {
 export function getAdaptTargetDescriptor(
   target: string,
 ): AdaptTargetDescriptor | null {
-  return target in TARGET_DESCRIPTORS
+  return Object.hasOwn(TARGET_DESCRIPTORS, target)
     ? TARGET_DESCRIPTORS[target as AdaptTarget]
     : null;
 }
