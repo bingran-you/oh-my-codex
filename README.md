@@ -218,6 +218,8 @@ omx doctor --team
 
 Only use the forced team shutdown for a team you have confirmed is dead or intentionally abandoned.
 
+If `Shift+Enter` still submits instead of inserting a newline inside an OMX-managed tmux session, see [Troubleshooting execution readiness](./docs/troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). Current OMX already enables tmux extended-key forwarding around its own Codex launch paths, so a persistent failure is usually a tmux terminal-capability/discoverability problem rather than a net-new OMX feature gap.
+
 ### Explore and sparkshell
 
 - `omx explore --prompt "..."` is for read-only repository lookup
