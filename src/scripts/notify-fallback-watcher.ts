@@ -774,10 +774,13 @@ async function readRalphSteerLock(path: string): Promise<RalphSteerLockRecord | 
   }
 }
 
+const RALPH_STEER_LOCK_MAX_RETRIES = 5;
+
 async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> {
   await mkdir(dirname(ralphSteerLockPath), { recursive: true }).catch(() => {});
 
-  while (true) {
+  let acquired = false;
+  for (let attempt = 0; attempt < RALPH_STEER_LOCK_MAX_RETRIES; attempt++) {
     let handle;
     try {
       handle = await open(ralphSteerLockPath, 'wx');
@@ -786,6 +789,7 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
         acquired_at: new Date().toISOString(),
       };
       await handle.writeFile(JSON.stringify(payload, null, 2));
+      acquired = true;
       break;
     } catch (error) {
       const code = error !== null && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : '';
@@ -803,6 +807,11 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
     } finally {
       await handle?.close().catch(() => {});
     }
+  }
+
+  if (!acquired) {
+    lastRalphContinueSteer.last_reason = 'global_lock_exhausted';
+    return null;
   }
 
   try {
