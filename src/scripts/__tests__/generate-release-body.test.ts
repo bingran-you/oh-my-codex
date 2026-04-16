@@ -45,6 +45,7 @@ Outdated contributor text.
 describe('generate-release-body', () => {
   it('preserves custom sections while refreshing contributors and compare metadata from git', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-generate-release-body-'));
+    const originalGitHubRepository = process.env.GITHUB_REPOSITORY;
     try {
       git(root, ['init']);
       git(root, ['config', 'user.name', 'Release Bot']);
@@ -66,6 +67,7 @@ describe('generate-release-body', () => {
       git(root, ['commit', '-m', 'bob change'], { GIT_AUTHOR_NAME: 'Bob Example', GIT_AUTHOR_EMAIL: 'bob@example.com' });
       git(root, ['tag', 'v0.13.0']);
 
+      delete process.env.GITHUB_REPOSITORY;
       await generateReleaseBody({
         cwd: root,
         templatePath: 'RELEASE_BODY.md',
@@ -80,6 +82,11 @@ describe('generate-release-body', () => {
       assert.match(generated, /## Contributors\n\nThanks to Alice Example and Bob Example for contributing to this release\./);
       assert.match(generated, /\*\*Full Changelog\*\*: \[`v0\.12\.0\.\.\.v0\.13\.0`\]\(https:\/\/github\.com\/example\/oh-my-codex\/compare\/v0\.12\.0\.\.\.v0\.13\.0\)/);
     } finally {
+      if (originalGitHubRepository === undefined) {
+        delete process.env.GITHUB_REPOSITORY;
+      } else {
+        process.env.GITHUB_REPOSITORY = originalGitHubRepository;
+      }
       await rm(root, { recursive: true, force: true });
     }
   });
