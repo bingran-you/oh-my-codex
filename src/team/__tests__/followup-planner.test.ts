@@ -102,6 +102,18 @@ describe('followup-planner', () => {
     assert.ok(plan.allocations.some((allocation) => allocation.role === 'dependency-expert' && allocation.reason.includes('specialist')));
   });
 
+  it('allocates explore first plus dependency-expert for local-usage-plus-upgrade follow-up phrasing', () => {
+    const plan = buildFollowupStaffingPlan(
+      'team',
+      'Check how we use this SDK today and whether we should upgrade it',
+      ['dependency-expert', 'executor', 'explore', 'verifier'],
+      { workerCount: 3, fallbackRole: 'executor' },
+    );
+
+    assert.ok(plan.allocations.some((allocation) => allocation.role === 'explore' && allocation.reason.includes('primary')));
+    assert.ok(plan.allocations.some((allocation) => allocation.role === 'dependency-expert' && allocation.reason.includes('specialist')));
+  });
+
   it('recognizes short approved team follow-up shortcuts in English and Korean', () => {
     assert.equal(
       isApprovedExecutionFollowupShortcut('team', 'team', { planningComplete: true }),

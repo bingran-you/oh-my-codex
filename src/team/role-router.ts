@@ -101,19 +101,23 @@ const DESIGN_INTENT = /\b(?:design|layout|style)\b|\b(?:build|create)\b.*\b(?:ui
 const BUILD_FIX_INTENT = /\b(?:build|compile|tsc|type error|compilation)\b|(?:빌드|컴파일|타입 오류)/i;
 const CLEANUP_INTENT = /\b(?:clean up|consolidate|reduce complexity|refactor|simplify)\b|(?:정리|단순화|리팩터)/i;
 const SECURITY_DOMAIN = /\b(?:auth|authentication|authorization|cve|injection|owasp|security|vulnerability|xss)\b|(?:보안|인증|인가|취약점)/i;
-const LOCAL_EXPLORATION_VERB = /\b(?:find|locate|look up|lookup|map|search|trace|where(?:\s+is|\s+are)?|which files?|what files?)\b/i;
+const LOCAL_EXPLORATION_VERB = /\b(?:check|find|inspect|locate|look up|lookup|map|review|search|trace|understand|where(?:\s+is|\s+are)?|which files?|what files?)\b/i;
 const LOCAL_EXPLORATION_SUBJECT = /\b(?:file|files|symbol|symbols|repo|repository|codebase|path|paths|usage|usages|reference|references|relationship|relationships|wiring|flow|implementation|local)\b/i;
+const LOCAL_USAGE_DISCOVERY = /\b(?:call sites?|current(?:ly)? use|how\s+we\s+use|integration points?|our usage|where\s+we\s+use)\b/i;
 const DEPENDENCY_EVALUATION_SIGNAL = /\b(?:dependency|dependencies|package|packages|sdk|sdks|library|libraries|framework|frameworks|crate|crates|npm|pypi|crates\.io|license|licenses|maintenance|download stats?|migration path|vendor)\b/i;
-const DEPENDENCY_EVALUATION_VERB = /\b(?:adopt|assess|choose|compare|evaluate|recommend|select)\b/i;
-const DEPENDENCY_EVALUATION_CONTEXT = /\b(?:candidate|candidates|comparison|download stats?|license|licenses|maintenance|migration path|options?|risk|trade-?offs?|vendor)\b/i;
+const DEPENDENCY_EVALUATION_VERB = /\b(?:adopt|assess|choose|compare|evaluate|recommend|replace|select|swap|upgrade)\b/i;
+const DEPENDENCY_EVALUATION_CONTEXT = /\b(?:candidate|candidates|comparison|download stats?|license|licenses|maintenance|migration path|options?|replacement|risk|trade-?offs?|upgrade|vendor)\b/i;
 const DEPENDENCY_IMPLEMENTATION_SIGNAL = /\b(?:adapter|api|call sites?|client|clients|code(?:path|paths)?|endpoint|endpoints|flow|flows|handler|handlers|implementation|imports?|integrat(?:e|ion)|module|modules|refactor|wire)\b/i;
 const RESEARCH_SIGNAL = /\b(?:official docs?|upstream docs?|vendor docs?|reference|references|api docs?|release notes?|changelog|version(?:ing)?|compatib(?:ility|le)|research)\b/i;
 const RESEARCH_VERB = /\b(?:check|consult|investigate|look up|lookup|read|research|review|study|verify)\b/i;
+const CHOSEN_TECH_RESEARCH_SIGNAL = /\b(?:api|apis|framework|frameworks|library|libraries|sdk|sdks|service|services|tool|tools|vendor)\b/i;
+const CHOSEN_TECH_RESEARCH_NEED = /\b(?:behavior|best way|configuration|configure|example|examples|feature|features?|how(?:\s+do|\s+to)?|in the wild|lifecycle|option|options|parameter|parameters|usage|what(?:\s+does|\s+is)|when(?:\s+does|\s+should)|why(?:\s+does)?)\b/i;
 const DOCS_DELIVERABLE_VERB = /\b(?:add|document|draft|edit|prepare|publish|refresh|revise|update|write)\b/i;
 const DOCS_DELIVERABLE_NOUN = /\b(?:api docs?|changelog|comments?|documentation|docs?|guide|guides|readme|release notes?)\b/i;
 
 function isLocalExplorationTask(text: string): boolean {
-  return LOCAL_EXPLORATION_VERB.test(text) && LOCAL_EXPLORATION_SUBJECT.test(text);
+  return (LOCAL_EXPLORATION_VERB.test(text) && LOCAL_EXPLORATION_SUBJECT.test(text))
+    || (LOCAL_USAGE_DISCOVERY.test(text) && /\b(?:current|currently|dependency|existing|local|our|package|packages|repo|repository|sdk|sdks|library|libraries)\b/i.test(text));
 }
 
 function isDocumentationDeliverableTask(text: string): boolean {
@@ -141,8 +145,12 @@ function isDependencyEvaluationTask(text: string): boolean {
 }
 
 function isResearchTask(text: string): boolean {
-  return RESEARCH_SIGNAL.test(text)
-    && (RESEARCH_VERB.test(text) || /\b(?:compatib(?:ility|le)|official docs?|release notes?|upstream docs?|vendor docs?|version(?:ing)?)\b/i.test(text))
+  const docsDrivenResearch = RESEARCH_SIGNAL.test(text)
+    && (RESEARCH_VERB.test(text) || /\b(?:compatib(?:ility|le)|official docs?|release notes?|upstream docs?|vendor docs?|version(?:ing)?)\b/i.test(text));
+  const chosenTechnologyGuidance = CHOSEN_TECH_RESEARCH_SIGNAL.test(text)
+    && CHOSEN_TECH_RESEARCH_NEED.test(text);
+
+  return (docsDrivenResearch || chosenTechnologyGuidance)
     && !isDocumentationDeliverableTask(text)
     && !isLocalExplorationTask(text)
     && !isDependencyEvaluationTask(text);

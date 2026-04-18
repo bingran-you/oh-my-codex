@@ -220,11 +220,17 @@ function pickSpecialistRole(
   primaryRole: string,
 ): string {
   const normalizedTask = task.toLowerCase();
-  const wantsExplore = /\b(?:find|locate|look up|lookup|map|search|trace|which files?|where(?:\s+is|\s+are)?)\b/.test(normalizedTask)
-    && /\b(?:file|files|symbol|symbols|repo|repository|codebase|path|paths|usage|usages|relationship|relationships|implementation|local)\b/.test(normalizedTask);
+  const wantsExplore = (
+    /\b(?:check|find|inspect|locate|look up|lookup|map|review|search|trace|understand|which files?|where(?:\s+is|\s+are)?)\b/.test(normalizedTask)
+      && /\b(?:file|files|symbol|symbols|repo|repository|codebase|path|paths|usage|usages|relationship|relationships|implementation|local|call sites?|integration points?)\b/.test(normalizedTask)
+  ) || /\b(?:call sites?|current(?:ly)? use|how we use|integration points?|our usage|where we use)\b/.test(normalizedTask);
   const wantsDependencyExpert = /\b(?:dependency|dependencies|package|packages|sdk|sdks|library|libraries|framework|frameworks|npm|pypi|license|maintenance|migration path|download stats?)\b/.test(normalizedTask)
-    && /\b(?:adopt|assess|choose|compare|evaluate|recommend|replace|select|swap|risk)\b/.test(normalizedTask);
-  const wantsResearcher = /\b(?:official docs?|upstream docs?|vendor docs?|reference|references|api docs?|release notes?|version(?:ing)?|compatib(?:ility|le)|research)\b/.test(normalizedTask);
+    && /\b(?:adopt|assess|choose|compare|evaluate|recommend|replace|risk|select|swap|upgrade)\b/.test(normalizedTask);
+  const wantsResearcher = /\b(?:official docs?|upstream docs?|vendor docs?|reference|references|api docs?|release notes?|version(?:ing)?|compatib(?:ility|le)|research)\b/.test(normalizedTask)
+    || (
+      /\b(?:api|framework|frameworks|library|libraries|sdk|sdks|vendor)\b/.test(normalizedTask)
+      && /\b(?:best way|behavior|example|examples|feature|features?|how to use|in the wild|parameter|parameters|usage|what does|why does)\b/.test(normalizedTask)
+    );
 
   if (wantsExplore && wantsDependencyExpert) {
     return chooseDistinctAvailableRole(

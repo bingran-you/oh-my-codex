@@ -139,6 +139,28 @@ describe('role-router', () => {
       assert.equal(result.confidence, 'high');
     });
 
+    it('routes chosen-technology usage questions to researcher even without explicit docs keywords', () => {
+      const result = routeTaskToRole(
+        'Best way to use framework feature',
+        'What is the best way to use this framework feature, and what behavior should we expect from the SDK?',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes external examples-in-the-wild questions to researcher', () => {
+      const result = routeTaskToRole(
+        'Find library examples in the wild',
+        'Find examples of this library in the wild and explain how the API is typically used',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+    });
+
     it('routes dependency evaluation tasks to dependency-expert', () => {
       const result = routeTaskToRole(
         'Evaluate logging SDK options',
@@ -147,6 +169,17 @@ describe('role-router', () => {
         'executor',
       );
       assert.equal(result.role, 'dependency-expert');
+      assert.equal(result.confidence, 'high');
+    });
+
+    it('routes local usage plus upgrade-decision tasks to explore first', () => {
+      const result = routeTaskToRole(
+        'Check how we use this SDK',
+        'Check how we use this SDK today and whether we should upgrade it',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'explore');
       assert.equal(result.confidence, 'high');
     });
 

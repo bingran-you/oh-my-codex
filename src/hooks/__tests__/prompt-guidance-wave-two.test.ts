@@ -38,15 +38,21 @@ describe('prompt guidance wave two contract', () => {
     assert.match(researcher, /Always include source URLs/i);
     assert.match(researcher, /Prefer official documentation.*over third-party summaries/i);
     assert.match(researcher, /Version compatibility or version uncertainty is noted when relevant|### Version Note/i);
+    assert.match(researcher, /already chosen technology/i);
+    assert.match(researcher, /not the default dependency-comparison role/i);
 
     assert.match(dependencyExpert, /Compare at least 2 candidates|multiple candidates/i);
     assert.match(dependencyExpert, /license compatibility/i);
     assert.match(dependencyExpert, /maintenance activity|download stats/i);
     assert.match(dependencyExpert, /Risks/i);
+    assert.match(dependencyExpert, /whether \/\s*which package, SDK, or framework to adopt, upgrade, replace, or migrate/i);
+    assert.match(dependencyExpert, /boundary crossing upward.*researcher|report that boundary crossing upward for `researcher`/i);
 
     assert.match(explore, /ALL paths are absolute/i);
     assert.match(explore, /Relationships between files\/patterns explained/i);
     assert.match(explore, /Read-only/i);
+    assert.match(explore, /repo-local facts only/i);
+    assert.match(explore, /dependency recommendation.*report that handoff upward|report that handoff upward/i);
   });
 
   it('security and verifier-adjacent prompts preserve merge-if-green as downstream context', () => {
