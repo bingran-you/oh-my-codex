@@ -202,6 +202,30 @@ describe('session lifecycle manager', () => {
     }
   });
 
+  it('starts a fresh canonical session when a new native SessionStart arrives after an earlier native session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-fresh-'));
+    try {
+      await writeSessionStart(cwd, 'omx-old-session', {
+        nativeSessionId: 'codex-native-old',
+      });
+
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new', {
+        pid: 54321,
+        platform: 'win32',
+      });
+
+      assert.equal(reconciled.session_id, 'codex-native-new');
+      assert.equal(reconciled.native_session_id, 'codex-native-new');
+      assert.equal(reconciled.pid, 54321);
+
+      const persisted = await readSessionState(cwd);
+      assert.equal(persisted?.session_id, 'codex-native-new');
+      assert.equal(persisted?.native_session_id, 'codex-native-new');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to a fresh canonical session when reconciling without authoritative launch state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-fallback-'));
     try {

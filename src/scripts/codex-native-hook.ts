@@ -19,7 +19,7 @@ import {
   writeTeamPhase,
 } from "../team/state.js";
 import { omxNotepadPath, omxProjectMemoryPath } from "../utils/paths.js";
-import { getStateFilePath } from "../mcp/state-paths.js";
+import { getStateFilePath, getStatePath } from "../mcp/state-paths.js";
 import {
   detectKeywords,
   detectPrimaryKeyword,
@@ -44,7 +44,6 @@ import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
-import { sessionModelInstructionsPath } from "../hooks/agents-overlay.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -387,7 +386,7 @@ async function buildSessionStartContext(
 
   const modeSummaries: string[] = [];
   for (const mode of ["ralph", "autopilot", "ultrawork", "ultraqa", "ralplan", "deep-interview", "team"] as const) {
-    const state = await readModeState(mode, cwd);
+    const state = await readJsonIfExists(getStatePath(mode, cwd, sessionId));
     if (state?.active !== true || !isNonTerminalPhase(state.current_phase)) continue;
     if (mode === "team") {
       const teamName = safeString(state.team_name).trim();
@@ -435,9 +434,22 @@ async function buildSessionStartContext(
   if (existsSync(omxNotepadPath(cwd))) {
     try {
       const notepad = await readFile(omxNotepadPath(cwd), "utf-8");
-      const compact = notepad.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3).join(" ");
-      if (compact) {
-        sections.push(`[Notepad]\n- ${compact.slice(0, 220)}`);
+      const header = "## PRIORITY";
+      const idx = notepad.indexOf(header);
+      if (idx >= 0) {
+        const nextHeader = notepad.indexOf("\n## ", idx + header.length);
+        const section = (
+          nextHeader < 0
+            ? notepad.slice(idx + header.length)
+            : notepad.slice(idx + header.length, nextHeader)
+        )
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .join(" ");
+        if (section) {
+          sections.push(`[Priority notes]\n- ${section.slice(0, 220)}`);
+        }
       }
     } catch {
       // best effort only
@@ -964,29 +976,6 @@ function readNativeStopSessionKey(
   return resolveRepeatableStopSessionId(payload, canonicalSessionId) || readPayloadThreadId(payload) || "global";
 }
 
-function hasManagedStopSessionEnv(sessionIds: string[]): boolean {
-  const envSessionId = safeString(process.env.OMX_SESSION_ID).trim();
-  if (!envSessionId) return false;
-  return sessionIds.length === 0 || sessionIds.includes(envSessionId);
-}
-
-async function hasManagedStopContext(
-  cwd: string,
-  payload: CodexHookPayload,
-  canonicalSessionId: string,
-): Promise<boolean> {
-  if (hasTeamWorkerContext()) return true;
-
-  const sessionIds = [...new Set([
-    canonicalSessionId,
-    readPayloadSessionId(payload),
-  ].map((value) => safeString(value).trim()).filter(Boolean))];
-
-  if (hasManagedStopSessionEnv(sessionIds)) return true;
-
-  return sessionIds.some((sessionId) => existsSync(sessionModelInstructionsPath(cwd, sessionId)));
-}
-
 function readPreviousNativeStopSignature(
   state: Record<string, unknown>,
   sessionKey: string,
@@ -1025,10 +1014,11 @@ async function maybeReturnRepeatableStopOutput(
   signature: string,
   output: Record<string, unknown> | null,
   canonicalSessionId?: string,
+  options: { allowRepeatDuringStopHook?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
   if (!output) return null;
   const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
-  if (stopHookActive) {
+  if (stopHookActive && options.allowRepeatDuringStopHook !== true) {
     const state = await readJsonIfExists(join(stateDir, NATIVE_STOP_STATE_FILE)) ?? {};
     const previousSignature = readPreviousNativeStopSignature(
       state,
@@ -1040,6 +1030,24 @@ async function maybeReturnRepeatableStopOutput(
   }
   await persistNativeStopSignature(stateDir, payload, signature, canonicalSessionId);
   return output;
+}
+
+async function returnPersistentStopBlock(
+  payload: CodexHookPayload,
+  stateDir: string,
+  signatureKind: string,
+  signatureValue: string,
+  output: Record<string, unknown> | null,
+  canonicalSessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  return await maybeReturnRepeatableStopOutput(
+    payload,
+    stateDir,
+    buildRepeatableStopSignature(payload, signatureKind, signatureValue, canonicalSessionId),
+    output,
+    canonicalSessionId,
+    { allowRepeatDuringStopHook: true },
+  );
 }
 
 async function findCanonicalActiveTeamForSession(
@@ -1274,20 +1282,45 @@ async function buildStopHookOutput(
   const canonicalSessionId = await resolveInternalSessionIdForPayload(cwd, sessionId);
   const threadId = readPayloadThreadId(payload);
   const ralphState = await readActiveRalphState(stateDir, canonicalSessionId);
-  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
-  const managedStopContext = await hasManagedStopContext(cwd, payload, canonicalSessionId);
   if (!ralphState) {
     const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
-    if (!stopHookActive && hasTeamWorkerContext()) return teamWorkerOutput;
+    if (hasTeamWorkerContext() && teamWorkerOutput) return teamWorkerOutput;
 
     const autopilotOutput = await buildModeBasedStopOutput("autopilot", cwd, canonicalSessionId);
-    if (!stopHookActive && autopilotOutput) return autopilotOutput;
+    if (autopilotOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "autopilot-stop",
+        safeString(autopilotOutput.stopReason),
+        autopilotOutput,
+        canonicalSessionId,
+      );
+    }
 
     const ultraworkOutput = await buildModeBasedStopOutput("ultrawork", cwd, canonicalSessionId);
-    if (!stopHookActive && ultraworkOutput) return ultraworkOutput;
+    if (ultraworkOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "ultrawork-stop",
+        safeString(ultraworkOutput.stopReason),
+        ultraworkOutput,
+        canonicalSessionId,
+      );
+    }
 
     const ultraqaOutput = await buildModeBasedStopOutput("ultraqa", cwd, canonicalSessionId);
-    if (!stopHookActive && ultraqaOutput) return ultraqaOutput;
+    if (ultraqaOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "ultraqa-stop",
+        safeString(ultraqaOutput.stopReason),
+        ultraqaOutput,
+        canonicalSessionId,
+      );
+    }
 
     const releaseReadinessFinalizeResult = await maybeBuildReleaseReadinessFinalizeStopOutput(
       payload,
@@ -1299,16 +1332,11 @@ async function buildStopHookOutput(
 
     const teamOutput = await buildTeamStopOutput(cwd, canonicalSessionId);
     if (teamOutput) {
-      const teamSignature = buildRepeatableStopSignature(
-        payload,
-        "team-stop",
-        safeString(teamOutput.stopReason),
-        canonicalSessionId,
-      );
-      return await maybeReturnRepeatableStopOutput(
+      return await returnPersistentStopBlock(
         payload,
         stateDir,
-        teamSignature,
+        "team-stop",
+        safeString(teamOutput.stopReason),
         teamOutput,
         canonicalSessionId,
       );
@@ -1321,16 +1349,11 @@ async function buildStopHookOutput(
           canonicalTeam.teamName,
           canonicalTeam.phase,
         );
-        const canonicalTeamSignature = buildRepeatableStopSignature(
-          payload,
-          "team-stop",
-          `${canonicalTeam.teamName}|${canonicalTeam.phase}`,
-          canonicalSessionId,
-        );
-        const repeatedCanonicalTeamOutput = await maybeReturnRepeatableStopOutput(
+        const repeatedCanonicalTeamOutput = await returnPersistentStopBlock(
           payload,
           stateDir,
-          canonicalTeamSignature,
+          "team-stop",
+          `${canonicalTeam.teamName}|${canonicalTeam.phase}`,
           canonicalTeamOutput,
           canonicalSessionId,
         );
@@ -1338,12 +1361,18 @@ async function buildStopHookOutput(
       }
 
       const skillOutput = await buildSkillStopOutput(cwd, canonicalSessionId, threadId);
-      if (!stopHookActive && skillOutput) return skillOutput;
+      if (skillOutput) {
+        return await returnPersistentStopBlock(
+          payload,
+          stateDir,
+          "skill-stop",
+          safeString(skillOutput.stopReason),
+          skillOutput,
+          canonicalSessionId,
+        );
+      }
     }
 
-    if (!managedStopContext) {
-      return null;
-    }
 
     const lastAssistantMessage = safeString(
       payload.last_assistant_message ?? payload.lastAssistantMessage,
@@ -1356,10 +1385,11 @@ async function buildStopHookOutput(
       && detectNativeStopStallPattern(lastAssistantMessage, autoNudgeConfig.patterns, autoNudgePhase)
     ) {
       const effectiveResponse = resolveEffectiveAutoNudgeResponse(autoNudgeConfig.response);
-      return await maybeReturnRepeatableStopOutput(
+      return await returnPersistentStopBlock(
         payload,
         stateDir,
-        buildRepeatableStopSignature(payload, "auto-nudge", lastAssistantMessage, canonicalSessionId),
+        "auto-nudge",
+        lastAssistantMessage,
         {
           decision: "block",
           reason: effectiveResponse,
@@ -1374,21 +1404,24 @@ async function buildStopHookOutput(
     return null;
   }
 
-  if (stopHookActive) {
-    return null;
-  }
-
   const currentPhase = safeString(ralphState?.current_phase).trim() || "executing";
   const stopReason = `ralph_${currentPhase}`;
   const systemMessage =
     `OMX Ralph is still active (phase: ${currentPhase}); continue the task and gather fresh verification evidence before stopping.`;
 
-  return {
-    decision: "block",
-    reason: systemMessage,
-    stopReason,
-    systemMessage,
-  };
+  return await returnPersistentStopBlock(
+    payload,
+    stateDir,
+    "ralph-stop",
+    currentPhase,
+    {
+      decision: "block",
+      reason: systemMessage,
+      stopReason,
+      systemMessage,
+    },
+    canonicalSessionId,
+  );
 }
 
 export async function dispatchCodexNativeHook(

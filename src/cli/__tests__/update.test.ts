@@ -120,7 +120,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
     const originalLog = console.log;
     const prompts: string[] = [];
-    const setupCalls: Array<{ force?: boolean }> = [];
+    const setupCalls: unknown[] = [];
     console.log = (...args: unknown[]) => {
       prompts.push(args.map((arg) => String(arg)).join(' '));
     };
@@ -138,10 +138,39 @@ describe('maybeCheckAndPromptUpdate', () => {
         });
       });
 
-      assert.deepEqual(setupCalls, [{ force: true }]);
+      assert.deepEqual(setupCalls, [{}]);
       assert.match(prompts.join('\n'), /Updated to v0\.9\.0/);
     } finally {
       console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves local config semantics by avoiding force setup during auto-update', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    let receivedOptions: unknown;
+
+    try {
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.13.0',
+          fetchLatestVersion: async () => '0.13.1',
+          askYesNo: async () => true,
+          runGlobalUpdate: () => ({ ok: true, stderr: '' }),
+          setup: async (options) => {
+            receivedOptions = options ?? {};
+          },
+        });
+      });
+
+      assert.deepEqual(receivedOptions, {});
+      assert.equal(
+        typeof receivedOptions === 'object' &&
+          receivedOptions !== null &&
+          'force' in receivedOptions,
+        false,
+      );
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });

@@ -142,7 +142,7 @@ The `deep-interview` skill is the Socratic deep interview workflow and includes 
 | "autopilot", "build me", "I want a" | `$autopilot` | Read `./.codex/skills/autopilot/SKILL.md`, execute autonomous pipeline |
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `./.codex/skills/ultrawork/SKILL.md`, execute parallel agents |
 | "ultraqa" | `$ultraqa` | Read `./.codex/skills/ultraqa/SKILL.md`, run QA cycling workflow |
-| "analyze", "investigate" | `$analyze` | Read `./.codex/skills/analyze/SKILL.md`, run deep analysis |
+| "analyze", "investigate" | `$analyze` | Read `./.codex/skills/analyze/SKILL.md`, run read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references |
 | "plan this", "plan the", "let's plan" | `$plan` | Read `./.codex/skills/plan/SKILL.md`, start planning workflow |
 | "interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" | `$deep-interview` | Read `./.codex/skills/deep-interview/SKILL.md`, run Ouroboros-inspired Socratic ambiguity-gated interview workflow |
 | "ralplan", "consensus plan" | `$ralplan` | Read `./.codex/skills/ralplan/SKILL.md`, start consensus planning with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk) |

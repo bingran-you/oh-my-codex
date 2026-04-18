@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
@@ -50,6 +52,15 @@ async function writeModeState(cwd: string, mode: string, state: unknown): Promis
   const stateDir = join(cwd, '.omx', 'state');
   await mkdir(stateDir, { recursive: true });
   await writeFile(join(stateDir, mode + '-state.json'), JSON.stringify(state));
+}
+
+function initGitRepo(cwd: string): void {
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['checkout', '-b', 'safe-branch'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/origin-repo.git'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['commit', '--allow-empty', '-m', 'init'], { cwd, stdio: 'ignore' });
 }
 
 async function createWorktreePointerFixture(cwd: string, options: { withOrigin?: boolean } = {}): Promise<void> {
@@ -182,6 +193,22 @@ describe('buildGitBranchLabel', () => {
       preset: 'focused',
       git: { display: 'repo-branch', repoLabel: 'manual' },
     }, gitRunner), 'manual/feature/test');
+  });
+
+  it('does not execute shell metacharacters from config.git.remoteName in the non-Windows fallback path', { skip: process.platform === 'win32' }, async () => {
+    await withTempRepo('omx-hud-remote-name-shell-', async (cwd) => {
+      initGitRepo(cwd);
+      const markerPath = join(cwd, 'remote-name-injected');
+      const maliciousRemoteName = `origin; touch ${markerPath}`;
+
+      const label = buildGitBranchLabel(cwd, {
+        preset: 'focused',
+        git: { display: 'repo-branch', remoteName: maliciousRemoteName },
+      });
+
+      assert.equal(label, 'origin-repo/safe-branch');
+      assert.equal(existsSync(markerPath), false);
+    });
   });
 
   it('resolves remote config from the git common dir for worktree pointers on Windows', async () => {
@@ -458,6 +485,40 @@ describe('readAllState canonical skill precedence', () => {
       const state = await readAllState(cwd);
       assert.equal(state.ralph, null);
       assert.deepEqual(state.team, { active: true, team_name: 'alpha', current_phase: 'running' });
+    });
+  });
+
+  it('prefers canonical team phase over stale team detail current_phase', async () => {
+    await withTempRepo('omx-hud-canonical-team-phase-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-team-phase';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      const teamDir = join(rootStateDir, 'team', 'alpha');
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(teamDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'team',
+        phase: 'starting',
+        session_id: sessionId,
+        active_skills: [{ skill: 'team', phase: 'starting', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'alpha',
+        current_phase: 'starting',
+      }));
+      await writeFile(join(teamDir, 'phase.json'), JSON.stringify({
+        current_phase: 'team-exec',
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      }));
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.team, { active: true, team_name: 'alpha', current_phase: 'team-exec' });
     });
   });
 

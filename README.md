@@ -72,6 +72,7 @@ $team 3:executor "execute the approved plan in parallel"
 ```
 
 That is the main path.
+Before you treat the runtime as ready, run the quick-start smoke test below: `omx doctor` verifies the install shape, while `omx exec` proves the active Codex runtime can actually authenticate and complete a model call from the current environment.
 Start OMX strongly, clarify first when needed, approve the plan, then choose `$team` for coordinated parallel execution or `$ralph` for the persistent completion loop.
 
 ## What OMX is for
@@ -90,11 +91,21 @@ If you want plain Codex with no extra workflow layer, you probably do not need O
 
 - Node.js 20+
 - Codex CLI installed: `npm install -g @openai/codex`
-- Codex auth configured
+- Codex auth configured and visible in the same shell/profile that will run OMX
 - `tmux` on macOS/Linux if you want the recommended durable team runtime
 - `psmux` on native Windows only if you intentionally want the less-supported Windows team path
 
 ### A good first session
+
+After install, check both boundaries:
+
+```bash
+omx doctor
+codex login status
+omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+```
+
+`omx doctor` catches missing OMX files, hooks, and runtime prerequisites. The real smoke test catches auth, profile, and provider/base-URL problems that only appear when Codex performs an actual request.
 
 Launch OMX the recommended way:
 
@@ -135,10 +146,12 @@ Most users should think of OMX as **better task routing + better workflow + bett
 ## Start here if you are new
 
 1. Run `omx setup`
-2. Launch with `omx --madmax --high`
-3. Use `$deep-interview "..."` when the request or boundaries are still unclear
-4. Use `$ralplan "..."` to approve the plan and review tradeoffs
-5. Choose `$team` for coordinated parallel execution or `$ralph` for persistent completion loops
+2. Run `omx doctor`
+3. Run a real execution smoke test: `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
+4. Launch with `omx --madmax --high`
+5. Use `$deep-interview "..."` when the request or boundaries are still unclear
+6. Use `$ralplan "..."` to approve the plan and review tradeoffs
+7. Choose `$team` for coordinated parallel execution or `$ralph` for persistent completion loops
 
 ## Recommended workflow
 
@@ -177,7 +190,7 @@ These are operator/support surfaces:
 - `omx setup` installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and OMX-managed native Codex hooks in `.codex/hooks.json`
   - setup refresh preserves non-OMX hook entries in `.codex/hooks.json` and only rewrites OMX-managed wrappers
   - `omx uninstall` removes OMX-managed wrappers from `.codex/hooks.json` but keeps the file when user hooks remain
-- `omx doctor` verifies the install when something seems wrong
+- `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
 
 For non-team sessions, native Codex hooks are now the canonical lifecycle surface:
@@ -186,6 +199,26 @@ For non-team sessions, native Codex hooks are now the canonical lifecycle surfac
 - `omx tmux-hook` / notify-hook / derived watcher = tmux + runtime fallback paths
 
 See [Codex native hook mapping](./docs/codex-native-hooks.md) for the current native / fallback matrix.
+
+
+### Troubleshooting false-green readiness
+
+A green `omx doctor` means the install and local runtime wiring look sane. If real execution still fails, check the environment Codex actually uses:
+
+- Run `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"` from the same shell/profile that will launch OMX.
+- In custom HOME, profile, container, or service shells, confirm the active `~/.codex` (or `CODEX_HOME`) is the one with the expected auth and config. Do not assume your normal user `~/.codex` is visible there.
+- If you depend on a local OpenAI-compatible proxy, confirm the active `~/.codex/config.toml` includes the expected `openai_base_url`; otherwise a proxy-issued key can be sent to the default endpoint and fail with `401 Unauthorized`, `Missing bearer or basic authentication in header`, or `Incorrect API key provided`.
+- If `omx doctor --team` or resume reports a stale team such as `resume_blocker` or a missing tmux session, clean the dead runtime state before retrying:
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+Only use the forced team shutdown for a team you have confirmed is dead or intentionally abandoned.
+
+If `Shift+Enter` still submits instead of inserting a newline inside an OMX-managed tmux session, see [Troubleshooting execution readiness](./docs/troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). Current OMX already enables tmux extended-key forwarding around its own Codex launch paths, so a persistent failure is usually a tmux terminal-capability/discoverability problem rather than a net-new OMX feature gap.
 
 ### Explore and sparkshell
 
@@ -251,6 +284,7 @@ If this happens, try:
 - [Skills reference](./docs/skills.html)
 - [Codex native hook mapping](./docs/codex-native-hooks.md)
 - [Integrations](./docs/integrations.html)
+- [Troubleshooting execution readiness](./docs/troubleshooting.md)
 - [OpenClaw / notification gateway guide](./docs/openclaw-integration.md)
 - [Contributing](./CONTRIBUTING.md)
 - [Changelog](./CHANGELOG.md)

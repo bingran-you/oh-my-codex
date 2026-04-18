@@ -34,6 +34,8 @@ import {
 } from '../subagents/tracker.js';
 import { listNotifyCanonicalActiveTeams } from './notify-hook/active-team.js';
 import { sameFilePath } from '../utils/paths.js';
+import { validateSessionId } from '../mcp/state-paths.js';
+import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -48,6 +50,21 @@ function asNumber(value: string | number | undefined, fallback: number): number 
 
 function safeString(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+function normalizeValidSessionId(value: unknown): string {
+  const trimmed = safeString(value).trim();
+  if (!trimmed) return '';
+  try {
+    return validateSessionId(trimmed) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeValidTeamName(value: unknown): string {
+  const trimmed = safeString(value).trim();
+  return TEAM_NAME_SAFE_PATTERN.test(trimmed) ? trimmed : '';
 }
 
 function parsePositivePid(value: unknown): number | null {
@@ -523,8 +540,8 @@ async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
   const session = await readSessionState(cwd);
   if (session?.session_id) {
     if (isSessionStateAuthoritativeForCwd(session, cwd)) {
-      currentSessionId = safeString(session.session_id).trim();
-      currentSessionIsLive = !isSessionStale(session);
+      currentSessionId = normalizeValidSessionId(session.session_id);
+      currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
     }
     if (currentSessionId && currentSessionIsLive) {
       candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
@@ -590,8 +607,8 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
   let currentSessionIsLive = false;
   const session = await readSessionState(cwd);
   if (session?.session_id) {
-    currentSessionId = safeString(session.session_id).trim();
-    currentSessionIsLive = !isSessionStale(session);
+    currentSessionId = normalizeValidSessionId(session.session_id);
+    currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
     if (currentSessionId && currentSessionIsLive) {
       candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
     }
@@ -610,7 +627,7 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
       .catch(() => null);
     if (!parsed || typeof parsed !== 'object' || parsed.active !== true) continue;
 
-    const teamName = safeString(parsed.team_name).trim();
+    const teamName = normalizeValidTeamName(parsed.team_name);
     if (!teamName) continue;
 
     const teamConfigDir = join(stateDir, 'team', teamName);
@@ -653,7 +670,9 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
 
   const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
   for (const team of canonicalFallbackTeams) {
-    const teamConfigDir = join(stateDir, 'team', team.teamName);
+    const teamName = normalizeValidTeamName(team.teamName);
+    if (!teamName) continue;
+    const teamConfigDir = join(stateDir, 'team', teamName);
     const manifestPath = join(teamConfigDir, 'manifest.v2.json');
     const configPath = join(teamConfigDir, 'config.json');
     const teamConfigPath = existsSync(manifestPath) ? manifestPath : configPath;
@@ -678,10 +697,10 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
       path: team.path,
       state: {
         active: true,
-        team_name: team.teamName,
+        team_name: teamName,
         current_phase: team.phase,
       },
-      team_name: team.teamName,
+      team_name: teamName,
       pane_count: paneStatus.paneCount,
     };
   }
@@ -755,10 +774,13 @@ async function readRalphSteerLock(path: string): Promise<RalphSteerLockRecord | 
   }
 }
 
+const RALPH_STEER_LOCK_MAX_RETRIES = 5;
+
 async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> {
   await mkdir(dirname(ralphSteerLockPath), { recursive: true }).catch(() => {});
 
-  while (true) {
+  let acquired = false;
+  for (let attempt = 0; attempt < RALPH_STEER_LOCK_MAX_RETRIES; attempt++) {
     let handle;
     try {
       handle = await open(ralphSteerLockPath, 'wx');
@@ -767,6 +789,7 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
         acquired_at: new Date().toISOString(),
       };
       await handle.writeFile(JSON.stringify(payload, null, 2));
+      acquired = true;
       break;
     } catch (error) {
       const code = error !== null && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : '';
@@ -784,6 +807,11 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
     } finally {
       await handle?.close().catch(() => {});
     }
+  }
+
+  if (!acquired) {
+    lastRalphContinueSteer.last_reason = 'global_lock_exhausted';
+    return null;
   }
 
   try {
@@ -847,18 +875,18 @@ async function readRalphProgressGate(
   return { allow: true, reason: 'progress_stale', progress_at: progressAt, subagent_session_id: subagentSessionId };
 }
 
-function shouldSkipRalphContinue(now: number, candidateIso: string, startupIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
+function shouldSkipRalphContinue(now: number, candidateIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
   const sharedMs = parseIsoMillis(candidateIso);
   const localMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
-  const startupAnchorIso = lastRalphContinueSteer.cooldown_anchor_at || startupIso;
+  const startupAnchorIso = lastRalphContinueSteer.cooldown_anchor_at;
   const startupAnchorMs = parseIsoMillis(startupAnchorIso);
-  const startupCooldown = sharedMs === null && localMs === null;
-  const anchorMs = sharedMs ?? localMs ?? startupAnchorMs ?? startedAt;
+  const startupCooldown = sharedMs === null && localMs === null && startupAnchorMs !== null;
+  const anchorMs = sharedMs ?? localMs ?? startupAnchorMs ?? 0;
   const anchorIso = sharedMs !== null
     ? candidateIso
     : (localMs !== null ? lastRalphContinueSteer.last_sent_at : startupAnchorIso);
   return {
-    skip: now - anchorMs < RALPH_CONTINUE_CADENCE_MS,
+    skip: anchorMs > 0 && now - anchorMs < RALPH_CONTINUE_CADENCE_MS,
     reason: startupCooldown ? 'startup_cooldown' : (sharedMs !== null ? 'global_cooldown' : 'cooldown'),
     anchorMs,
     anchorIso,
@@ -1004,7 +1032,6 @@ async function writePidFileRecord(): Promise<void> {
 async function runRalphContinueSteerTick(): Promise<void> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  const startupIso = new Date(startedAt).toISOString();
   const activeRalph = await resolveActiveRalphState();
   const activePaneId = safeString(activeRalph.state?.tmux_pane_id).trim();
   lastRalphContinueSteer = {
@@ -1030,13 +1057,9 @@ async function runRalphContinueSteerTick(): Promise<void> {
     return;
   }
 
-  if (parseIsoMillis(lastRalphContinueSteer.last_sent_at) === null && parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at) === null) {
-    lastRalphContinueSteer.cooldown_anchor_at = startupIso;
-  }
-
   const sharedBeforeLock = await readRalphSteerTimestamp();
   lastRalphContinueSteer.shared_last_sent_at = sharedBeforeLock;
-  const initialCooldown = shouldSkipRalphContinue(now, sharedBeforeLock, startupIso);
+  const initialCooldown = shouldSkipRalphContinue(now, sharedBeforeLock);
   if (initialCooldown.skip) {
     lastRalphContinueSteer.last_reason = initialCooldown.reason;
     if (!sharedBeforeLock && initialCooldown.reason === 'startup_cooldown') {
@@ -1048,7 +1071,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
   const outcome = await withRalphSteerLock(async () => {
     const sharedLastSentAt = await readRalphSteerTimestamp();
     lastRalphContinueSteer.shared_last_sent_at = sharedLastSentAt;
-    const cooldown = shouldSkipRalphContinue(Date.now(), sharedLastSentAt, startupIso);
+    const cooldown = shouldSkipRalphContinue(Date.now(), sharedLastSentAt);
     if (cooldown.skip) {
       lastRalphContinueSteer.last_reason = cooldown.reason;
       if (!sharedLastSentAt && cooldown.reason === 'startup_cooldown') {

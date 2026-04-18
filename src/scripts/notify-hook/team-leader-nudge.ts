@@ -23,6 +23,8 @@ import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { writeTeamLeaderAttention } from '../../team/state.js';
 import { readLatestTeamProgressEvidenceMs } from '../../team/progress-evidence.js';
+import { validateSessionId } from '../../mcp/state-paths.js';
+import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON = 'pane_already_shows_same_classified_state';
@@ -33,6 +35,21 @@ const ACK_LIKE_PATTERNS = [
   /^(?:ok|okay|k|roger|copy|received|got it|understood|sounds good)[.!]*$/i,
   /^(?:on it|will do|i(?:'|')ll do it|working on it)[.!]*$/i,
 ];
+
+function normalizeValidSessionId(value) {
+  const trimmed = safeString(value).trim();
+  if (!trimmed) return '';
+  try {
+    return validateSessionId(trimmed) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeValidTeamName(value) {
+  const trimmed = safeString(value).trim();
+  return TEAM_NAME_SAFE_PATTERN.test(trimmed) ? trimmed : '';
+}
 
 export function resolveLeaderNudgeIntervalMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
@@ -251,8 +268,9 @@ async function resolveCurrentSessionId(stateDir) {
     || process.env.SESSION_ID
     || '',
   ).trim();
-  if (fromEnv) return fromEnv;
-  return safeString((await readUsableSessionState(resolve(stateDir, '..', '..')))?.session_id).trim();
+  const envSessionId = normalizeValidSessionId(fromEnv);
+  if (envSessionId) return envSessionId;
+  return normalizeValidSessionId((await readUsableSessionState(resolve(stateDir, '..', '..')))?.session_id);
 }
 
 async function readWorkerStatusSnapshot(stateDir, teamName, workerName) {
@@ -601,7 +619,7 @@ export async function maybeNudgeTeamLeader({
       if (!existsSync(teamStatePath)) continue;
       const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
       if (!parsed) continue;
-      const teamName = safeString(parsed.team_name || '').trim();
+      const teamName = normalizeValidTeamName(parsed.team_name || '');
       if (!teamName) continue;
 
       const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
@@ -619,7 +637,9 @@ export async function maybeNudgeTeamLeader({
 
   const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
   for (const team of canonicalFallbackTeams) {
-    candidateTeamNames.add(team.teamName);
+    const teamName = normalizeValidTeamName(team.teamName);
+    if (!teamName) continue;
+    candidateTeamNames.add(teamName);
   }
 
   // Use pre-computed staleness (captured before HUD state was updated this turn)

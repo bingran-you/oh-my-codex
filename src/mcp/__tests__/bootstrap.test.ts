@@ -203,6 +203,7 @@ describe('mcp duplicate sibling detection', () => {
       newerSiblingPids: [140],
     };
 
+    // Well within the 5-minute post-traffic idle window — must stay alive.
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 35_000, 1_000, 10_000),
       false,
@@ -210,6 +211,61 @@ describe('mcp duplicate sibling detection', () => {
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 40_500, 1_000, 10_000),
       false,
+    );
+  });
+
+  it('self-exits after traffic once the post-traffic idle window elapses', () => {
+    const observation = {
+      status: 'older_duplicate' as const,
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 140],
+      newerSiblingPids: [140],
+    };
+
+    // lastTraffic=10_000, duplicateObserved=1_000, now=311_000
+    // idle since lastTraffic: 301_000 ms (> 300_000 ms default)
+    // idle since duplicateObserved: 310_000 ms (> 300_000 ms)
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 311_000, 1_000, 10_000),
+      true,
+    );
+  });
+
+  it('stays alive when post-traffic idle window has not fully elapsed', () => {
+    const observation = {
+      status: 'older_duplicate' as const,
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 140],
+      newerSiblingPids: [140],
+    };
+
+    // lastTraffic=10_000, duplicateObserved=1_000, now=309_000
+    // idle since lastTraffic: 299_000 ms (< 300_000 ms default)
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 309_000, 1_000, 10_000),
+      false,
+    );
+  });
+
+  it('uses the later of lastTraffic and duplicateObserved as the idle anchor', () => {
+    const observation = {
+      status: 'older_duplicate' as const,
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 140],
+      newerSiblingPids: [140],
+    };
+
+    // duplicateObserved=200_000 (later than lastTraffic=10_000)
+    // idle anchor = max(10_000, 200_000) = 200_000
+    // now=499_000 → idle since anchor: 299_000 ms (< 300_000 ms)
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 499_000, 200_000, 10_000),
+      false,
+    );
+    // now=501_000 → idle since anchor: 301_000 ms (> 300_000 ms)
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 501_000, 200_000, 10_000),
+      true,
     );
   });
 

@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-03-10T10:43:36.374Z",
+  "generatedAt": "2026-04-18T00:57:32.991Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 39,
     "promptCount": 30,
-    "activeSkillCount": 23,
+    "activeSkillCount": 25,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -54,8 +54,7 @@
     {
       "name": "ultraqa",
       "category": "execution",
-      "status": "merged",
-      "canonical": "ralph",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
@@ -92,8 +91,7 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "debugger",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
@@ -477,16 +475,8 @@
       "canonical": "ultrawork"
     },
     {
-      "name": "ultraqa",
-      "canonical": "ralph"
-    },
-    {
       "name": "swarm",
       "canonical": "team"
-    },
-    {
-      "name": "analyze",
-      "canonical": "debugger"
     },
     {
       "name": "deepsearch",

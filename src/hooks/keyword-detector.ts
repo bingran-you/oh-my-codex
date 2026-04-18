@@ -353,9 +353,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm', 'stop', 'abort', 'parallel']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'swarm', 'stop', 'abort', 'parallel']);
 
-type IntentKeyword = 'team' | 'swarm' | 'stop' | 'abort' | 'parallel';
+type IntentKeyword = 'ralph' | 'team' | 'swarm' | 'stop' | 'abort' | 'parallel';
 
 /**
  * Per-keyword intent patterns used when a keyword is in KEYWORDS_REQUIRING_INTENT.
@@ -370,6 +370,13 @@ type IntentKeyword = 'team' | 'swarm' | 'stop' | 'abort' | 'parallel';
  * CI output like "running 8 tests in parallel" does not trigger ultrawork.
  */
 const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
+  ralph: [
+    /(?:^|[^\w])\$(?:ralph)\b/i,
+    /\/prompts:ralph\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:a\s+|an\s+|the\s+)?ralph\b/i,
+    /^(?:please\s+)?ralph\s+(?:continue|resume|start|run|go|keep\s+going|ship|fix|implement|execute|verify|complete)\b/i,
+    /\bralph\s+(?:mode|workflow|loop)\b/i,
+  ],
   team: [
     /(?:^|[^\w])\$(?:team)\b/i,
     /\/prompts:team\b/i,

@@ -2096,19 +2096,20 @@ export async function startTeam(
       const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? taskRoles[0]
         : agentType;
-      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
+      const runtimeRole = workerRole;
+      const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,
-        workerRole,
+        runtimeRole,
         undefined,
         preferredReasoning,
         workerCliPlan[i - 1],
       );
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
-        ? composeRoleInstructionsForRole(workerRole, rawRolePromptContent, resolvedWorkerModel)
+        ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
         : null;
       const workerWorktreePath = workerWorkspace.worktreePath ?? undefined;
       const fallbackInstructionsPath = workerInstructionsPath ?? join(leaderCwd, 'AGENTS.md');
@@ -2116,19 +2117,19 @@ export async function startTeam(
         ? await writeWorkerWorktreeRootAgentsFile({
           teamName: sanitized,
           workerName,
-          workerRole,
+          workerRole: runtimeRole,
           rolePromptContent: rolePromptContent ?? "",
           teamStateRoot,
           leaderCwd,
           worktreePath: workerWorktreePath,
         })
         : rolePromptContent
-          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, workerRole, rolePromptContent)
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, runtimeRole, rolePromptContent)
           : fallbackInstructionsPath;
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
       });

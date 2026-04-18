@@ -333,6 +333,7 @@ export async function scaleUp(
       const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? workerTaskRoles[0]
         : agentType;
+      const runtimeRole = workerRole;
       if (uniqueTaskRoles.size > 1) {
         console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
       }
@@ -351,27 +352,27 @@ export async function scaleUp(
       const workerCwd = workerWorkspace ? workerWorkspace.worktreePath : leaderCwd;
 
       // Build startup command and create tmux pane
-      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
-      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, workerRole, preferredReasoning);
+      const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole) ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, runtimeRole, preferredReasoning);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
-        ? composeRoleInstructionsForRole(workerRole, rawRolePromptContent, resolvedWorkerModel)
+        ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
         : null;
       const teamInstructionsPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'worker-agents.md');
       const instructionsFilePath = workerWorkspace
         ? await writeWorkerWorktreeRootAgentsFile({
             teamName: sanitized,
             workerName,
-            workerRole,
+            workerRole: runtimeRole,
             rolePromptContent: rolePromptContent ?? '',
             teamStateRoot,
             leaderCwd,
             worktreePath: workerWorkspace.worktreePath,
           })
         : rolePromptContent
-          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, workerRole, rolePromptContent)
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, runtimeRole, rolePromptContent)
           : teamInstructionsPath;
       const extraEnv: Record<string, string> = {
         OMX_TEAM_STATE_ROOT: teamStateRoot,
@@ -393,7 +394,7 @@ export async function scaleUp(
         extraEnv,
         workerCliPlan[i],
         undefined,
-        workerRole,
+        runtimeRole,
       );
 
       // Find the right-most worker pane to split from, or fall back to leader pane.
@@ -465,7 +466,7 @@ export async function scaleUp(
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
       });

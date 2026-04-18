@@ -174,7 +174,7 @@ export async function maybeCheckAndPromptUpdate(
   const result = updateDependencies.runGlobalUpdate();
 
   if (result.ok) {
-    await updateDependencies.setup({ force: true });
+    await updateDependencies.setup();
     console.log(`[omx] Updated to v${latest}. Restart to use new code.`);
   } else {
     console.log('[omx] Update failed. Run manually: npm install -g oh-my-codex@latest');

@@ -226,6 +226,53 @@ describe('notify-hook session-scoped iteration updates', () => {
     }
   });
 
+
+  it('prefers the invocation OMX session id over the persisted canonical session for notify sidefiles when a fork scope exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-fork-session-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const canonicalSessionId = 'omx-canonical-session';
+      const forkSessionId = 'omx-fork-session';
+      const nativeSessionId = 'codex-native-session';
+      const forkDir = join(stateDir, 'sessions', forkSessionId);
+      await mkdir(forkDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: canonicalSessionId,
+        native_session_id: nativeSessionId,
+        started_at: new Date().toISOString(),
+        cwd: wd,
+      }));
+
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify({
+        cwd: wd,
+        session_id: nativeSessionId,
+        type: 'agent-turn-complete',
+        thread_id: 'th-fork',
+        turn_id: 'tu-fork',
+        input_messages: [],
+        last_assistant_message: 'ok',
+      })], {
+        cwd: join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'),
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          OMX_SESSION_ID: forkSessionId,
+          OMX_TEAM_WORKER: '',
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      assert.equal(existsSync(join(forkDir, 'hud-state.json')), true);
+      assert.equal(existsSync(join(forkDir, 'notify-hook-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'sessions', canonicalSessionId, 'hud-state.json')), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', canonicalSessionId, 'notify-hook-state.json')), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('persists visual-verdict feedback from runtime assistant output', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-visual-'));
     try {

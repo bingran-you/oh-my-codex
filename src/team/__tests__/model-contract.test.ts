@@ -118,6 +118,13 @@ describe('team model contract', () => {
     assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.4');
     assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
   });
+
+  it('keeps assigned worker roles as their own runtime identity', () => {
+    assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
+    assert.equal(resolveAgentReasoningEffort('explore'), 'low');
+    assert.equal(resolveAgentDefaultModel('style-reviewer'), expectedLowComplexityModel());
+    assert.equal(resolveAgentReasoningEffort('style-reviewer'), 'low');
+  });
 });
 
 describe('resolveTeamWorkerLaunchArgs - teammate reasoning allocation', () => {

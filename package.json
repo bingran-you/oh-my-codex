@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -24,6 +24,8 @@
     "test:explore": "cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js",
     "test:team:cross-rebase-smoke": "npm run build && node --test dist/team/__tests__/cross-rebase-smoke.test.js",
     "test:team:cross-rebase-smoke:compiled": "node --test dist/team/__tests__/cross-rebase-smoke.test.js",
+    "test:team:worker-runtime-identity": "npm run build && npm run test:team:worker-runtime-identity:compiled",
+    "test:team:worker-runtime-identity:compiled": "node --test dist/team/__tests__/worker-runtime-identity.test.js",
     "test:recent-bug-regressions": "npm run build && npm run test:recent-bug-regressions:compiled",
     "test:recent-bug-regressions:compiled": "node --test dist/hooks/__tests__/keyword-detector.test.js dist/scripts/__tests__/codex-native-hook.test.js dist/cli/__tests__/launch-fallback.test.js dist/team/__tests__/runtime.test.js dist/team/__tests__/hardening-e2e.test.js",
     "test:node": "node dist/scripts/run-test-files.js dist",

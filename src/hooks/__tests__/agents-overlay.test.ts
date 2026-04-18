@@ -136,6 +136,21 @@ describe("generateOverlay", () => {
     assert.ok(overlay.includes("iteration 1/5"));
   });
 
+  it("does not inherit stale root active modes into a fresh session overlay", async () => {
+    await writeFile(
+      join(tempDir, ".omx", "state", "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        iteration: 9,
+        max_iterations: 10,
+        current_phase: "executing",
+      }),
+    );
+
+    const overlay = await generateOverlay(tempDir, "fresh-session-isolation");
+    assert.equal(overlay.includes("ralph"), false);
+  });
+
   it("lists both approved combined workflow members from canonical skill state", async () => {
     const sessionId = "combined-session";
     const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
@@ -342,6 +357,22 @@ describe("resolveSessionOrchestrationMode", () => {
     assert.equal(mode, "team");
   });
 
+  it("does not inherit root skill-active orchestration mode into a fresh session", async () => {
+    await writeFile(
+      join(tempDir, ".omx", "state", "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+      }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(
+      tempDir,
+      "fresh-session-isolation",
+    );
+    assert.equal(mode, "default");
+  });
+
   it("reads persisted team skill state from the current session scope", async () => {
     const sessionId = "sess-team";
     const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
@@ -391,7 +422,7 @@ describe("resolveSessionOrchestrationMode", () => {
     assert.equal(mode, "default");
   });
 
-  it("falls back to root team skill state only when no session-scoped skill state exists", async () => {
+  it("does not inherit root team skill state into a fresh session without session-scoped state", async () => {
     const sessionId = "sess-root-fallback";
     await writeFile(
       join(tempDir, ".omx", "state", "skill-active-state.json"),
@@ -399,7 +430,7 @@ describe("resolveSessionOrchestrationMode", () => {
     );
 
     const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
-    assert.equal(mode, "team");
+    assert.equal(mode, "default");
   });
 
   it("active mode summary follows canonical session skill state instead of stale root mode files", async () => {

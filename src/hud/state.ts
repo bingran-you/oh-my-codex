@@ -6,7 +6,7 @@
 
 import { readFile } from 'fs/promises';
 import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
@@ -14,6 +14,7 @@ import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getReadScopedStateFilePaths, getReadScopedStatePaths, readCurrentSessionId } from '../mcp/state-paths.js';
+import { teamReadPhase as readTeamPhase } from '../team/team-ops.js';
 import { readUsableSessionState } from '../hooks/session.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
 import type {
@@ -215,8 +216,9 @@ function runGit(cwd: string, args: string[]): string | null {
           const config = readGitLayoutFile(gitLayout.gitDir, 'config')
             ?? readGitLayoutFile(gitLayout.commonDir, 'config');
           if (config) {
+            const escaped = remoteName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
             const re = new RegExp(
-              `\\[remote "${remoteName}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
+              `\\[remote "${escaped}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
               'm',
             );
             const m = config.match(re);
@@ -247,7 +249,7 @@ function runGit(cwd: string, args: string[]): string | null {
 
 function runGitExec(cwd: string, args: string[]): string | null {
   try {
-    return execSync(`git ${args.join(' ')}`, {
+    return execFileSync('git', args, {
       cwd,
       encoding: 'utf-8',
       timeout: 2000,
@@ -349,6 +351,26 @@ function mergePhase<T extends { active?: boolean; current_phase?: string }>(
   return { active: true, current_phase: canonicalPhase } as T;
 }
 
+async function readCanonicalTeamPhase(cwd: string, teamDetail: TeamStateForHud | null): Promise<string | undefined> {
+  const teamName = sanitizeOptionalString(teamDetail?.team_name);
+  if (!teamName) return undefined;
+  const phaseState = await readTeamPhase(teamName, cwd).catch(() => null);
+  return sanitizeOptionalString(phaseState?.current_phase);
+}
+
+function mergeTeamPhase(
+  detail: TeamStateForHud | null,
+  canonicalSkillPhase?: string,
+  canonicalTeamPhase?: string,
+): TeamStateForHud | null {
+  const canonicalPhase = canonicalTeamPhase || canonicalSkillPhase;
+  if (detail?.active === true) {
+    return canonicalPhase ? { ...detail, current_phase: canonicalPhase } : detail;
+  }
+  if (!canonicalPhase) return null;
+  return { active: true, current_phase: canonicalPhase };
+}
+
 /** Read all state files and build the full render context */
 export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFAULT_HUD_CONFIG): Promise<HudRenderContext> {
   const version = readVersion();
@@ -412,8 +434,13 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   const ultraqa = canonicalSkills.has('ultraqa') || useCompatibilityFallback
     ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
     : null;
+  const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
   const team = canonicalSkills.has('team') || useCompatibilityFallback
-    ? mergePhase(teamDetail?.active === true ? teamDetail : null, canonicalPhaseForSkill(canonicalSkills, 'team'))
+    ? mergeTeamPhase(
+      teamDetail?.active === true ? teamDetail : null,
+      canonicalPhaseForSkill(canonicalSkills, 'team'),
+      canonicalTeamPhase,
+    )
     : null;
   const autoresearch = canonicalSkills.has('autoresearch') || useCompatibilityFallback
     ? mergePhase(

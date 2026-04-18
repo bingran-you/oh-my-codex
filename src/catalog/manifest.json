@@ -35,8 +35,7 @@
     {
       "name": "ultraqa",
       "category": "execution",
-      "status": "merged",
-      "canonical": "ralph"
+      "status": "active"
     },
     {
       "name": "swarm",
@@ -64,8 +63,7 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "debugger"
+      "status": "active"
     },
     {
       "name": "deepsearch",

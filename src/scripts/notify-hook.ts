@@ -586,13 +586,8 @@ async function main() {
         shouldSendSessionIdleHookEvent,
         recordSessionIdleHookEventSent,
       } = await import('../notifications/idle-cooldown.js');
-      const sessionJsonPath = join(stateDir, 'session.json');
       const idleFingerprint = buildIdleNotificationFingerprint(payload);
-      let notifySessionId = '';
-      try {
-        const sessionData = JSON.parse(await readFile(sessionJsonPath, 'utf-8'));
-        notifySessionId = safeString(sessionData && sessionData.session_id ? sessionData.session_id : '');
-      } catch { /* no session file */ }
+      const notifySessionId = getEffectiveSessionId();
 
       const shouldNotifyLifecycle = notifySessionId
         && shouldSendIdleNotification(stateDir, notifySessionId, idleFingerprint);

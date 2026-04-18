@@ -218,7 +218,7 @@ Runtime availability gate:
 | "autopilot", "build me", "I want a" | `$autopilot` | Runtime-only: read `~/.codex/skills/autopilot/SKILL.md`, execute autonomous pipeline only inside OMX CLI/runtime |
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Runtime-only: read `~/.codex/skills/ultrawork/SKILL.md`, execute parallel agents only inside OMX CLI/runtime |
 | "ultraqa" | `$ultraqa` | Runtime-only: read `~/.codex/skills/ralph/SKILL.md`, run persistent completion and verification loop only inside OMX CLI/runtime (UltraQA compatibility alias) |
-| "analyze", "investigate" | `$analyze` | Read `~/.codex/prompts/debugger.md`, run root-cause analysis (analyze compatibility alias) |
+| "analyze", "investigate" | `$analyze` | Read `~/.codex/skills/analyze/SKILL.md`, run read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references |
 | "plan this", "plan the", "let's plan" | `$plan` | Read `~/.codex/skills/plan/SKILL.md`, start planning workflow |
 | "interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" | `$deep-interview` | Read `~/.codex/skills/deep-interview/SKILL.md`, run Ouroboros-inspired Socratic ambiguity-gated interview workflow |
 | "ralplan", "consensus plan" | `$ralplan` | Read `~/.codex/skills/ralplan/SKILL.md`, start consensus planning with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk) |

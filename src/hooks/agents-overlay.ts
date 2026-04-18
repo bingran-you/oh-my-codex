@@ -174,6 +174,9 @@ async function isRalphActive(
   cwd: string,
   sessionId?: string,
 ): Promise<boolean> {
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return false;
+  }
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
   const ralphRef = refs.find((ref) => ref.mode === "ralph");
   if (!ralphRef) return false;
@@ -201,6 +204,9 @@ async function readActiveModes(
   cwd: string,
   sessionId?: string,
 ): Promise<string> {
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return "";
+  }
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
   const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
   const canonicalSkills = new Map(
@@ -326,6 +332,9 @@ export async function resolveSessionOrchestrationMode(
 ): Promise<SessionOrchestrationMode> {
   if (activeSkill === "team") return "team";
   if (activeSkill) return "default";
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return "default";
+  }
 
   const scopedStateDirs = await getReadScopedStateDirs(cwd, sessionId);
   for (const stateDir of scopedStateDirs) {

@@ -3,6 +3,7 @@ import { readdir } from 'fs/promises';
 import { join } from 'path';
 import { readTeamManifestV2, readTeamPhase } from '../../team/state.js';
 import { resolveCanonicalTeamStateRoot } from '../../team/state-root.js';
+import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
 import { isTerminalPhase, safeString } from './utils.js';
 
 export interface NotifyCanonicalActiveTeam {
@@ -28,7 +29,7 @@ export async function listNotifyCanonicalActiveTeams(
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const teamName = entry.name.trim();
-    if (!teamName) continue;
+    if (!teamName || !TEAM_NAME_SAFE_PATTERN.test(teamName)) continue;
 
     const [manifest, phaseState] = await Promise.all([
       readTeamManifestV2(teamName, cwd),

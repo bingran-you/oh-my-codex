@@ -25,7 +25,23 @@ function isSafeStateFileName(fileName: string): boolean {
     && !fileName.includes('\\');
 }
 
+function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = [env.OMX_SESSION_ID, env.CODEX_SESSION_ID, env.SESSION_ID];
+  for (const candidate of candidates) {
+    const sessionId = safeString(candidate).trim();
+    if (!SESSION_ID_PATTERN.test(sessionId)) continue;
+    return sessionId;
+  }
+  return undefined;
+}
+
 export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
+  const envSessionId = readSessionIdFromEnvironment();
+  if (envSessionId) {
+    const envScopedDir = join(baseStateDir, 'sessions', envSessionId);
+    if (existsSync(envScopedDir)) return envSessionId;
+  }
+
   const cwd = resolve(baseStateDir, '..', '..');
   const session = await readUsableSessionState(cwd);
   const sessionId = safeString(session?.session_id);

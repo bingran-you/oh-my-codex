@@ -341,6 +341,29 @@ export async function validateSkillFile(skillMdPath: string): Promise<void> {
   parseSkillFrontmatter(content, skillMdPath);
 }
 
+function rewriteInstalledSkillDescriptionBadge(
+  content: string,
+  filePath = "SKILL.md",
+): string {
+  const metadata = parseSkillFrontmatter(content, filePath);
+  const badgePrefix = "[OMX] ";
+  const displayDescription = metadata.description.startsWith(badgePrefix)
+    ? metadata.description
+    : `${badgePrefix}${metadata.description}`;
+
+  return content.replace(
+    /^---\r?\n([\s\S]*?)\r?\n---/,
+    (frontmatterBlock, body) => {
+      const rewrittenBody = body.replace(
+        /^([ \t]*)description:(.*)$/m,
+        (_line: string, indent: string) =>
+          `${indent}description: ${JSON.stringify(displayDescription)}`,
+      );
+      return frontmatterBlock.replace(body, rewrittenBody);
+    },
+  );
+}
+
 async function buildLegacySkillOverlapNotice(
   scope: SetupScope,
 ): Promise<LegacySkillOverlapNotice> {
@@ -1530,6 +1553,20 @@ export async function installSkills(
       const sfStat = await stat(sfPath);
       if (!sfStat.isFile()) continue;
       const dstPath = join(skillDst, sf);
+      if (sf === "SKILL.md") {
+        await syncManagedContent(
+          rewriteInstalledSkillDescriptionBadge(
+            await readFile(sfPath, "utf-8"),
+            sfPath,
+          ),
+          dstPath,
+          summary,
+          backupContext,
+          options,
+          `skill ${skillName}/${sf}`,
+        );
+        continue;
+      }
       await syncManagedFileFromDisk(
         sfPath,
         dstPath,

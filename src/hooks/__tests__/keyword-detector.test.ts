@@ -134,6 +134,18 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match, null);
   });
 
+  it('does not trigger ralph from plain conversational mention', () => {
+    const match = detectPrimaryKeyword('why does ralph keep blocking stop?');
+    assert.equal(match, null);
+  });
+
+  it('still triggers ralph for explicit $ralph invocation', () => {
+    const match = detectPrimaryKeyword('$ralph continue verification');
+    assert.ok(match);
+    assert.equal(match.skill, 'ralph');
+    assert.equal(match.keyword.toLowerCase(), '$ralph');
+  });
+
   it('prefers ralplan over ralph when both keywords are present', () => {
     const match = detectPrimaryKeyword('use ralph mode but do ralplan first');
 
@@ -983,6 +995,30 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.current_phase, 'execution');
       assert.equal(modeState.started_at, '2026-02-25T00:00:00.000Z');
       assert.equal(modeState.state?.context_snapshot_path, '.omx/context/existing.md');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not persist Ralph workflow state for a plain conversational mention', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ralph-plain-text-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'why does ralph keep blocking stop?',
+        sessionId: 'sess-plain-ralph',
+        threadId: 'thread-plain-ralph',
+        turnId: 'turn-plain-ralph',
+        nowIso: '2026-04-17T00:00:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-plain-ralph', SKILL_ACTIVE_STATE_FILE)), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-plain-ralph', 'ralph-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

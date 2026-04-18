@@ -416,6 +416,23 @@ export interface ReplyListenerPollDeps {
   logImpl?: typeof log;
 }
 
+const SENSITIVE_KEY_PATTERN = /(["']?(?:api[_-]?key|token|secret|password|credentials?|authorization)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\n]+)/gi;
+const SENSITIVE_TOKEN_PATTERNS: RegExp[] = [
+  /(?:sk-(?:proj-|live-|test-)?|ghp_|gho_|ghs_|ghu_|github_pat_|xox[bpsar]-|glpat-|AKIA[A-Z0-9])\S+/g,
+];
+
+export function redactSensitiveTokens(text: string): string {
+  const withoutKeyedSecrets = text.replace(SENSITIVE_KEY_PATTERN, (match, prefix: string) => {
+    const value = match.slice(prefix.length).trimStart();
+    const quote = value.startsWith('"') ? '"' : value.startsWith('\'') ? '\'' : '';
+    return `${prefix}${quote}[REDACTED]${quote}`;
+  });
+  return SENSITIVE_TOKEN_PATTERNS.reduce(
+    (t, re) => t.replace(re, '[REDACTED]'),
+    withoutKeyedSecrets,
+  );
+}
+
 export function captureReplyAcknowledgementSummary(
   paneId: string,
   deps: ReplyAcknowledgementDeps = {},
@@ -425,10 +442,12 @@ export function captureReplyAcknowledgementSummary(
   const raw = capturePaneContentImpl(paneId, REPLY_ACK_CAPTURE_LINES);
   if (!raw) return null;
 
-  const summary = parseTmuxTailImpl(raw)
-    .replace(/\r/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .trim();
+  const summary = redactSensitiveTokens(
+    parseTmuxTailImpl(raw)
+      .replace(/\r/g, '')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+      .trim(),
+  );
 
   if (!summary) return null;
   if (summary.length <= REPLY_ACK_SUMMARY_MAX_CHARS) return summary;

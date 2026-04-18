@@ -788,6 +788,75 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('ignores invalid team_name before canonical leader follow-up team path joins', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeCanonicalTeamFixture(cwd, {
+        teamName: 'canonical-safe',
+        sessionId: 'sess-canonical-safe',
+        ownerSessionId: 'sess-canonical-safe',
+        coarseState: 'inactive',
+      });
+      const teamRoot = join(cwd, '.omx', 'state', 'team');
+      await mkdir(join(teamRoot, '..-bad-team'), { recursive: true });
+      await writeJson(join(teamRoot, '..-bad-team', 'manifest.v2.json'), {
+        schema_version: 2,
+        name: '..-bad-team',
+        task: 'invalid canonical fallback fixture',
+        leader: { session_id: 'sess-canonical-safe', worker_id: 'leader-fixed', role: 'coordinator' },
+        tmux_session: 'bad:0',
+        leader_pane_id: '%666',
+        hud_pane_id: null,
+        resize_hook_name: null,
+        resize_hook_target: null,
+        worker_count: 1,
+        next_task_id: 1,
+        workers: [{ name: 'worker-1', index: 1, pane_id: '%666', role: 'executor' }],
+        created_at: new Date().toISOString(),
+        policy: {
+          worker_launch_mode: 'interactive',
+          display_mode: 'split_pane',
+          dispatch_mode: 'hook_preferred_with_fallback',
+          dispatch_ack_timeout_ms: 2000,
+        },
+        governance: {
+          delegation_only: false,
+          plan_approval_required: false,
+          nested_teams_allowed: false,
+          one_team_per_leader_session: true,
+          cleanup_requires_all_workers_inactive: true,
+        },
+        lifecycle_profile: 'default',
+        permissions_snapshot: {
+          approval_mode: 'never',
+          sandbox_mode: 'danger-full-access',
+          network_access: true,
+        },
+      });
+      await writeJson(join(teamRoot, '..-bad-team', 'phase.json'), {
+        current_phase: 'team-exec',
+        updated_at: new Date().toISOString(),
+        transitions: [],
+      });
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, {
+        OMX_SESSION_ID: 'sess-canonical-safe',
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /-t %97/, 'should still target the valid canonical leader pane');
+      assert.doesNotMatch(tmuxLog, /%666/, 'invalid canonical team names must be ignored before joins');
+      assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'valid canonical fallback should still fire idle nudge');
+    });
+  });
+
   it('nudges leader via tmux send-keys when team is active and mailbox has messages', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -3051,6 +3120,73 @@ exit 0
       const nudgeEvent = events.find((e: { type: string }) => e.type === 'team_leader_nudge');
       assert.ok(nudgeEvent);
       assert.equal(nudgeEvent.reason, 'stale_leader_with_messages');
+    });
+  });
+
+  it('rejects invalid team_name before leader follow-up team path joins', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const validTeamName = 'valid-team';
+      const validTeamDir = join(stateDir, 'team', validTeamName);
+      const workersDir = join(validTeamDir, 'workers');
+      const nowIso = new Date().toISOString();
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'session.json'), { session_id: 'sess-current' });
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: '../team/valid-team',
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(validTeamDir, 'manifest.v2.json'), {
+        schema_version: 2,
+        name: validTeamName,
+        task: 'invalid team path repro',
+        leader: {
+          session_id: 'sess-current',
+          worker_id: 'leader-fixed',
+          role: 'coordinator',
+        },
+        policy: {
+          worker_launch_mode: 'interactive',
+          display_mode: 'split_pane',
+          dispatch_mode: 'hook_preferred_with_fallback',
+          dispatch_ack_timeout_ms: 2000,
+        },
+        tmux_session: 'valid-team:0',
+        leader_pane_id: '%94',
+        worker_count: 1,
+        workers: [
+          { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
+        ],
+        created_at: nowIso,
+      });
+      await mkdir(join(workersDir, 'worker-1'), { recursive: true });
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: nowIso,
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, {
+        OMX_SESSION_ID: 'sess-current',
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /send-keys/, 'invalid team_name must not be used for leader follow-up path resolution');
+      }
     });
   });
 });

@@ -327,6 +327,16 @@ export async function reconcileNativeSessionStart(
     });
   }
 
+  const existingNativeSessionId = typeof existing.native_session_id === 'string'
+    ? existing.native_session_id.trim()
+    : '';
+  if (existingNativeSessionId && existingNativeSessionId !== nativeSessionId) {
+    return await writeSessionStart(cwd, nativeSessionId, {
+      ...options,
+      nativeSessionId,
+    });
+  }
+
   const pid = Number.isInteger(options.pid) && options.pid && options.pid > 0
     ? options.pid
     : process.pid;

@@ -127,6 +127,37 @@ describe('notify-hook session-idle dedupe', () => {
     }
   });
 
+
+  it('writes session-idle hook state into the fork session scope when OMX_SESSION_ID targets a fork', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-idle-fork-scope-'));
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const hooksDir = join(wd, '.omx', 'hooks');
+      const pluginStatePath = join(wd, '.omx', 'plugin-state', 'session-idle.json');
+      const canonicalSessionId = 'sess-canonical';
+      const forkSessionId = 'sess-fork';
+
+      await mkdir(join(stateDir, 'sessions', forkSessionId), { recursive: true });
+      await mkdir(hooksDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: canonicalSessionId }, null, 2));
+      await writeFile(join(hooksDir, 'session-idle-counter.mjs'), buildSessionIdlePlugin(pluginStatePath), 'utf-8');
+
+      const result = runNotifyHook(repoRoot, wd, 'Waiting on forked review.', 'turn-idle-fork', {
+        OMX_SESSION_ID: forkSessionId,
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      assert.equal(existsSync(join(stateDir, 'sessions', forkSessionId, 'session-idle-hook-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'sessions', canonicalSessionId, 'session-idle-hook-state.json')), false);
+      const pluginState = await readJson<{ count: number }>(pluginStatePath);
+      assert.equal(pluginState.count, 1);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps post_turn_idle_notification hook dedupe active even when lifecycle cooldown is disabled', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-idle-dedupe-zero-cooldown-'));
     const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');

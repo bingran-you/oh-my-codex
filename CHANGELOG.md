@@ -4,6 +4,57 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-04-18
+
+Patch release covering security hardening, persistent-hook and Stop-handling correctness, Ralph activation and recovery safety, explore reentry guards, worker runtime identity preservation, skill UX refinements, and release-workflow metadata polish.
+
+### Added
+- **Analyze skill revival** — the `analyze` skill returns as a read-only, truth-telling investigation surface for OMX sessions. (PR [#1687](https://github.com/Yeachan-Heo/oh-my-codex/pull/1687))
+- **OMX skill display prefix** — OMX-installed skills are now marked in `/skills` without being renamed, so users can tell OMX-managed skills apart from local ones. (PR [#1686](https://github.com/Yeachan-Heo/oh-my-codex/pull/1686))
+- **Shift+Enter tmux triage docs** — documented Shift+Enter newline behavior in tmux so operators can separate terminal/env issues from OMX regressions. (PR [#1683](https://github.com/Yeachan-Heo/oh-my-codex/pull/1683), issue [#1682](https://github.com/Yeachan-Heo/oh-my-codex/issues/1682))
+
+### Fixed
+
+#### Security / hardening
+- **Path traversal in identifier handling** — validated identifiers before they reach team/session joins and closed the parent path-traversal surface. (PRs [#1658](https://github.com/Yeachan-Heo/oh-my-codex/pull/1658), [#1674](https://github.com/Yeachan-Heo/oh-my-codex/pull/1674), issue [#1650](https://github.com/Yeachan-Heo/oh-my-codex/issues/1650))
+- **HUD state shell and regex injection** — `execFileSync` was replaced with async `execFile` in leader git polling, and git helpers now reject shell/regex metacharacters with regression coverage for HUD `remoteName` inputs. (PRs [#1662](https://github.com/Yeachan-Heo/oh-my-codex/pull/1662), [#1652](https://github.com/Yeachan-Heo/oh-my-codex/pull/1652))
+- **Reply acknowledgement redaction** — notification reply acknowledgements no longer leak quoted or multi-part secrets, without reviving unrelated watcher churn. (PR [#1670](https://github.com/Yeachan-Heo/oh-my-codex/pull/1670))
+- **Transitive dependency vulnerabilities** — `npm audit fix` applied to patch transitive dependency CVEs. (PR [#1669](https://github.com/Yeachan-Heo/oh-my-codex/pull/1669))
+
+#### Stop / persistent hooks
+- **Native Stop auto-nudge** — native Stop auto-nudge now runs without being gated by the OMX runtime, while active OMX workflows still block Stop until they truly finish; Stop-hook cleanup stays green under the no-unused CI check. (PR [#1707](https://github.com/Yeachan-Heo/oh-my-codex/pull/1707))
+
+#### Ralph / runtime authority
+- **Conversational Ralph mention gating** — casual mentions of Ralph in conversation no longer seed workflow state, preventing accidental activation. (PR [#1697](https://github.com/Yeachan-Heo/oh-my-codex/pull/1697), issue [#1696](https://github.com/Yeachan-Heo/oh-my-codex/issues/1696))
+- **Ralph continuation recovery** — Ralph stays visibly active across continuation recovery, with dead Ralph cooldown state removed so CI stays green. (PR [#1681](https://github.com/Yeachan-Heo/oh-my-codex/pull/1681), issue [#1677](https://github.com/Yeachan-Heo/oh-my-codex/issues/1677))
+- **Ralph steer-lock retry cap** — `withRalphSteerLock` retries are now capped to prevent unbounded stale-lock loops. (PR [#1663](https://github.com/Yeachan-Heo/oh-my-codex/pull/1663))
+- **Worker runtime identity preservation** — worker runtime role identity survives startup and scaling, with worker identity verification collapsed into one narrow, reviewable path. (PR [#1676](https://github.com/Yeachan-Heo/oh-my-codex/pull/1676))
+
+#### Explore / launch safety
+- **Explore shell-startup re-entry fail-closed** — `omx explore` fails closed on shell-startup re-entry instead of recursing. (PR [#1700](https://github.com/Yeachan-Heo/oh-my-codex/pull/1700), issue [#1698](https://github.com/Yeachan-Heo/oh-my-codex/issues/1698))
+- **Explore allowlist wrapper self-resolution** — `omx explore` allowlist wrappers no longer self-resolve and recurse. (PR [#1695](https://github.com/Yeachan-Heo/oh-my-codex/pull/1695), issue [#1692](https://github.com/Yeachan-Heo/oh-my-codex/issues/1692))
+
+#### Hooks / notifications / session state
+- **Forked notify-hook routing** — forked notify-hook activity stays attached to the active fork session instead of drifting. (PR [#1680](https://github.com/Yeachan-Heo/oh-my-codex/pull/1680), issue [#1679](https://github.com/Yeachan-Heo/oh-my-codex/issues/1679))
+- **Stale watcher PID reuse** — notify-fallback-watcher verifies process identity before reaping stale PIDs, with a plain-text PID fallback, lock-directory holder PID, liveness checks, and a Windows guard. (PR [#1672](https://github.com/Yeachan-Heo/oh-my-codex/pull/1672), issue [#1657](https://github.com/Yeachan-Heo/oh-my-codex/issues/1657))
+- **tmux extended-keys stale lock recovery** — tmux extended-keys lease lock now recovers from stale holders instead of hanging indefinitely. (PR [#1668](https://github.com/Yeachan-Heo/oh-my-codex/pull/1668), issue [#1655](https://github.com/Yeachan-Heo/oh-my-codex/issues/1655))
+- **MCP duplicate sibling cleanup** — post-traffic duplicate MCP siblings self-exit after extended idle instead of leaking. (PR [#1666](https://github.com/Yeachan-Heo/oh-my-codex/pull/1666))
+- **Project-root discovery** — OMX now resolves the project root by walking to `.omx` instead of a hardcoded directory depth. (PR [#1664](https://github.com/Yeachan-Heo/oh-my-codex/pull/1664))
+- **AGENTS.md preservation on setup refresh** — local `AGENTS.md` content is preserved during auto-update refresh. (PR [#1673](https://github.com/Yeachan-Heo/oh-my-codex/pull/1673), issue [#1671](https://github.com/Yeachan-Heo/oh-my-codex/issues/1671))
+- **Fresh-session context isolation** — new sessions are isolated from stale task-scoped startup context. (PR [#1634](https://github.com/Yeachan-Heo/oh-my-codex/pull/1634), issue [#1624](https://github.com/Yeachan-Heo/oh-my-codex/issues/1624))
+
+#### HUD / worker startup
+- **Canonical team phase over stale startup HUD** — HUD prefers the canonical team phase over stale startup state. (PR [#1646](https://github.com/Yeachan-Heo/oh-my-codex/pull/1646))
+- **Wiki Unicode title slugs** — `wiki.titleToSlug` preserves Unicode characters. (PR [#1645](https://github.com/Yeachan-Heo/oh-my-codex/pull/1645))
+- **Worker shell startup command quoting** — `processSpec.command` is properly quoted during worker shell startup. (PR [#1644](https://github.com/Yeachan-Heo/oh-my-codex/pull/1644))
+
+#### Release workflow / docs
+- **Release contributor metadata range** — release contributor metadata stays aligned with the actual release commit range, and the release-body regression test no longer breaks under CI env. (PR [#1639](https://github.com/Yeachan-Heo/oh-my-codex/pull/1639), issue [#1623](https://github.com/Yeachan-Heo/oh-my-codex/issues/1623))
+- **Doctor readiness clarity** — doctor output now clarifies when setup is done versus when Codex can really run. (PR [#1630](https://github.com/Yeachan-Heo/oh-my-codex/pull/1630), issue [#1626](https://github.com/Yeachan-Heo/oh-my-codex/issues/1626))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, release notes, and release-readiness docs aligned to `0.13.2`.
+
 ## [0.13.1] - 2026-04-16
 
 Hotfix release for the detached tmux startup regression introduced in `0.13.0`.

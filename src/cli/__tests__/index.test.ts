@@ -1,6 +1,6 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -685,6 +685,7 @@ describe("reapStaleNotifyFallbackWatcher", () => {
       const killed: Array<{ pid: number; signal?: NodeJS.Signals }> = [];
 
       await reapStaleNotifyFallbackWatcher(pidPath, {
+        isWatcherProcess: () => true,
         tryKillPid(pid, signal) {
           killed.push({ pid, signal });
           return true;
@@ -737,6 +738,7 @@ describe("reapStaleNotifyFallbackWatcher", () => {
       const warned: Array<{ message: unknown; meta: unknown }> = [];
       await reapStaleNotifyFallbackWatcher(pidPath, {
         readFile: async (path, encoding) => readFile(path, encoding),
+        isWatcherProcess: () => true,
         tryKillPid() {
           throw new Error("permission denied");
         },
@@ -1936,7 +1938,120 @@ exit 0
     ]);
   });
 
-  it("buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach", () => {
+  it("reapStaleNotifyFallbackWatcher skips kill when process identity does not match a watcher", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-reap-pid-identity-"));
+    const pidPath = join(cwd, "watcher.pid");
+    await writeFile(pidPath, JSON.stringify({ pid: 99999, started_at: new Date().toISOString() }));
+
+    const killed: number[] = [];
+    await reapStaleNotifyFallbackWatcher(pidPath, {
+      isWatcherProcess: () => false,
+      tryKillPid: (pid) => { killed.push(pid); return true; },
+    });
+
+    assert.equal(killed.length, 0, "should not kill a process that is not a watcher");
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("reapStaleNotifyFallbackWatcher sends SIGTERM only after confirming watcher identity", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-reap-pid-confirmed-"));
+    const pidPath = join(cwd, "watcher.pid");
+    await writeFile(pidPath, JSON.stringify({ pid: 12345, started_at: new Date().toISOString() }));
+
+    const killed: number[] = [];
+    await reapStaleNotifyFallbackWatcher(pidPath, {
+      isWatcherProcess: () => true,
+      tryKillPid: (pid) => { killed.push(pid); return true; },
+    });
+
+    assert.deepEqual(killed, [12345], "should SIGTERM the verified watcher process");
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("reuses legacy plain-text PID parsing without widening stale reap semantics across PID reuse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-reap-legacy-pid-"));
+    try {
+      const pidPath = join(cwd, "watcher.pid");
+      await writeFile(pidPath, "12345\n", "utf-8");
+
+      const observed: number[] = [];
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        isWatcherProcess(pid) {
+          observed.push(pid);
+          return false;
+        },
+        tryKillPid: (pid) => {
+          observed.push(pid);
+          return true;
+        },
+      });
+
+      assert.deepEqual(
+        observed,
+        [12345],
+        "legacy plain-text PID files should still identity-check reused PIDs before any kill",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reaps watcher-record PIDs only after the record path confirms watcher identity across PID reuse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-reap-record-pid-"));
+    try {
+      const pidPath = join(cwd, "watcher.pid");
+      await writeFile(
+        pidPath,
+        JSON.stringify({ pid: 54321, started_at: "2026-04-05T00:00:00.000Z" }),
+        "utf-8",
+      );
+
+      const observed: Array<{ step: "identity" | "kill"; pid: number }> = [];
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        isWatcherProcess(pid) {
+          observed.push({ step: "identity", pid });
+          return true;
+        },
+        tryKillPid(pid) {
+          observed.push({ step: "kill", pid });
+          return true;
+        },
+      });
+
+      assert.deepEqual(observed, [
+        { step: "identity", pid: 54321 },
+        { step: "kill", pid: 54321 },
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("acquireTmuxExtendedKeysLease recovers from a stale lock left by a crashed process", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-stale-lock-"));
+    const leaseDir = join(cwd, ".omx", "state", "tmux-extended-keys");
+    const lockDir = join(leaseDir, "tmp-stale-sock.lock");
+
+    mkdirSync(lockDir, { recursive: true });
+    const staleTime = new Date(Date.now() - 60_000);
+    utimesSync(lockDir, staleTime, staleTime);
+
+    const calls: string[][] = [];
+    const execStub = (_file: string, args: readonly string[]): string => {
+      calls.push([...args]);
+      if (args[0] === "display-message") return "/tmp/stale-sock";
+      return "";
+    };
+
+    const lease = acquireTmuxExtendedKeysLease(cwd, execStub);
+
+    assert.equal(typeof lease, "string", "lease should succeed after stale lock recovery");
+    assert.ok(!existsSync(lockDir), "stale lock directory should be removed");
+
+    if (lease) releaseTmuxExtendedKeysLease(cwd, lease, execStub);
+    await rm(cwd, { recursive: true, force: true });
+  });
+    it("buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach", () => {
     const steps = buildDetachedSessionFinalizeSteps(
       "omx-demo",
       "%12",

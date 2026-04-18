@@ -7,6 +7,7 @@ import {
   RateLimiter,
   captureReplyAcknowledgementSummary,
   formatReplyAcknowledgement,
+  redactSensitiveTokens,
   sanitizeReplyInput,
   isReplyListenerProcess,
   normalizeReplyListenerConfig,
@@ -380,6 +381,58 @@ describe('formatReplyAcknowledgement', () => {
       message,
       'Injected into Codex CLI session.\n\nRecent output summary unavailable.',
     );
+  });
+});
+
+describe('redactSensitiveTokens', () => {
+  it('redacts OpenAI-style API keys', () => {
+    assert.equal(
+      redactSensitiveTokens('export OPENAI_API_KEY=sk-proj-abc123def456'),
+      'export OPENAI_API_KEY=[REDACTED]',
+    );
+  });
+
+  it('redacts GitHub PAT tokens', () => {
+    assert.equal(
+      redactSensitiveTokens('token: ghp_1234567890abcdefABCDEF'),
+      'token: [REDACTED]',
+    );
+  });
+
+  it('redacts generic key=value secrets', () => {
+    const result = redactSensitiveTokens('api_key=mysecretvalue123 other text');
+    assert.equal(result.includes('mysecretvalue123'), false);
+  });
+
+  it('redacts multi-part authorization header values', () => {
+    assert.equal(
+      redactSensitiveTokens('authorization: Bearer mysecrettoken'),
+      'authorization: [REDACTED]',
+    );
+  });
+
+  it('redacts quoted JSON secret fields', () => {
+    assert.equal(
+      redactSensitiveTokens('{"api_key":"mysecret","safe":true}'),
+      '{"api_key":"[REDACTED]","safe":true}',
+    );
+  });
+
+  it('preserves text without secrets', () => {
+    const input = 'npm run build\n33 tests passed\nno errors found';
+    assert.equal(redactSensitiveTokens(input), input);
+  });
+});
+
+describe('captureReplyAcknowledgementSummary redaction', () => {
+  it('redacts secrets from captured tmux output', () => {
+    const summary = captureReplyAcknowledgementSummary('%99', {
+      capturePaneContentImpl: () => 'export OPENAI_API_KEY=sk-proj-abc123\n$ codex chat',
+      parseTmuxTailImpl: (raw: string) => raw,
+    });
+    assert.ok(summary);
+    assert.equal(summary.includes('sk-proj-abc123'), false, 'API key must be redacted');
+    assert.ok(summary.includes('[REDACTED]'));
   });
 });
 
