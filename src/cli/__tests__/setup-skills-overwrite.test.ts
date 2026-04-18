@@ -68,6 +68,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('analyze'), true);
       assert.equal(installed.has('team'), true);
       assert.equal(installed.has('worker'), true);
+      assert.equal(installed.has('autoresearch'), true);
       assert.equal(installed.has('swarm'), false);
       assert.equal(installed.has('ecomode'), false);
       assert.equal(installed.has('ultraqa'), true);
@@ -83,6 +84,10 @@ describe('omx setup skills overwrite behavior', () => {
       assert.match(
         await readFile(join(skillsDir, 'analyze', 'SKILL.md'), 'utf-8'),
         /^---\nname: analyze/m,
+      );
+      assert.match(
+        await readFile(join(skillsDir, 'autoresearch', 'SKILL.md'), 'utf-8'),
+        /^---\nname: autoresearch/m,
       );
     } finally {
       process.chdir(previousCwd);

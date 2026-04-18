@@ -75,4 +75,12 @@ describe('catalog schema', () => {
     assert.equal(aiSlopCleaner?.category, 'shortcut');
     assert.equal(aiSlopCleaner?.status, 'active');
   });
+
+  it('includes autoresearch as an active built-in skill', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const autoresearch = parsed.skills.find((skill) => skill.name === 'autoresearch');
+
+    assert.equal(autoresearch?.category, 'execution');
+    assert.equal(autoresearch?.status, 'active');
+  });
 });

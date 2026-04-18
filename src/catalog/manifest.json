@@ -38,6 +38,11 @@
       "status": "active"
     },
     {
+      "name": "autoresearch",
+      "category": "execution",
+      "status": "active"
+    },
+    {
       "name": "swarm",
       "category": "execution",
       "status": "alias",

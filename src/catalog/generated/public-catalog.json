@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-04-18T00:57:32.991Z",
+  "generatedAt": "2026-04-18T08:54:56.317Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 39,
+    "skillCount": 40,
     "promptCount": 30,
-    "activeSkillCount": 25,
+    "activeSkillCount": 26,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -53,6 +53,13 @@
     },
     {
       "name": "ultraqa",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "autoresearch",
       "category": "execution",
       "status": "active",
       "core": false,
