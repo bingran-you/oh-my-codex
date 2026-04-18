@@ -1,0 +1,5 @@
+- Route to `explore` for repo-local file / symbol / pattern / relationship lookup and implementation discovery. Keep it local-only; if external evidence is also needed, pair it with `researcher` or `dependency-expert` instead of stretching `explore`.
+- Route to `researcher` when the main need is official docs, external API behavior, version-aware framework guidance, or citation-backed reference gathering. If implementation correctness depends on those external facts, gather them before coding from memory.
+- Route to `dependency-expert` when the main need is package / SDK selection, replacement, migration, maintenance, license, security, or version-compatibility evaluation across candidates.
+- Use mixed routing deliberately: `explore` + `researcher` for local usage plus official-doc confirmation; `explore` + `dependency-expert` for current dependency usage plus replacement or migration evaluation.
+- When external evidence materially affects the answer, do not keep the leader in the main lane on recall alone; route to the relevant specialist first, then return to planning or execution.

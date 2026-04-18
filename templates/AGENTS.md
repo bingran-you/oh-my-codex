@@ -182,6 +182,17 @@ Match role to task shape:
 For Codex native child agents, model routing defaults to inheritance/current repo defaults unless the caller has a concrete reason to override it.
 </model_routing>
 
+<specialist_routing>
+Leader/workflow routing contract:
+<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->
+- Route to `explore` for repo-local file / symbol / pattern / relationship lookup and implementation discovery. Keep it local-only; if external evidence is also needed, pair it with `researcher` or `dependency-expert` instead of stretching `explore`.
+- Route to `researcher` when the main need is official docs, external API behavior, version-aware framework guidance, or citation-backed reference gathering. If implementation correctness depends on those external facts, gather them before coding from memory.
+- Route to `dependency-expert` when the main need is package / SDK selection, replacement, migration, maintenance, license, security, or version-compatibility evaluation across candidates.
+- Use mixed routing deliberately: `explore` + `researcher` for local usage plus official-doc confirmation; `explore` + `dependency-expert` for current dependency usage plus replacement or migration evaluation.
+- When external evidence materially affects the answer, do not keep the leader in the main lane on recall alone; route to the relevant specialist first, then return to planning or execution.
+<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->
+</specialist_routing>
+
 ---
 
 <agent_catalog>

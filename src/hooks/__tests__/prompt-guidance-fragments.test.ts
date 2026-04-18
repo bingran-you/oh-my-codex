@@ -22,6 +22,7 @@ function extract(text: string, startMarker: string, endMarker: string): string {
 describe('prompt-guidance fragments stay synced with generated surfaces', () => {
   it('syncs root/template AGENTS shared guidance blocks', () => {
     const operating = read('docs/prompt-guidance-fragments/core-operating-principles.md').trim();
+    const specialistRouting = read('docs/prompt-guidance-fragments/leader-specialist-routing.md').trim();
     const verifySeq = read('docs/prompt-guidance-fragments/core-verification-and-sequencing.md').trim();
 
     for (const file of ['AGENTS.md', 'templates/AGENTS.md']) {
@@ -29,6 +30,10 @@ describe('prompt-guidance fragments stay synced with generated surfaces', () => 
       assert.equal(
         extract(content, '<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->'),
         operating,
+      );
+      assert.equal(
+        extract(content, '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->', '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->'),
+        specialistRouting,
       );
       assert.equal(
         extract(content, '<!-- OMX:GUIDANCE:VERIFYSEQ:START -->', '<!-- OMX:GUIDANCE:VERIFYSEQ:END -->'),
