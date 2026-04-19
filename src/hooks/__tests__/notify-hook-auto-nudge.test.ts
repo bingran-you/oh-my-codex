@@ -1830,7 +1830,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'input-messages': ['please use autopilot for this task'],
+        'input-messages': ['please use $autopilot for this task'],
         'last-assistant-message': 'Here is the plan I will follow.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);

@@ -629,6 +629,112 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("keeps bare keep-going continuation on the active autopilot skill instead of denying with generic ralph overlap", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-bare-continuation-"));
+    try {
+      const sessionId = "sess-autopilot-cont";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        keyword: "$autopilot",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [
+          { skill: "autopilot", phase: "planning", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "execution",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-cont",
+          turn_id: "turn-autopilot-cont",
+          prompt: "\\ keep going now",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /"keep going" -> ralph/);
+      assert.doesNotMatch(message, /denied workflow keyword/i);
+      assert.doesNotMatch(message, /Unsupported workflow overlap: autopilot \+ ralph\./);
+      assert.doesNotMatch(message, /Prompt-side `\$ralph` activation/);
+      assert.equal(existsSync(join(sessionDir, "ralph-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps bare keep-going continuation on the active ralph skill without resetting through generic keep-going routing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-bare-continuation-"));
+    try {
+      const sessionId = "sess-ralph-cont";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralph",
+        keyword: "$ralph",
+        phase: "executing",
+        session_id: sessionId,
+        active_skills: [
+          { skill: "ralph", phase: "executing", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "verifying",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        iteration: 4,
+        max_iterations: 50,
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralph-cont",
+          turn_id: "turn-ralph-cont",
+          prompt: "keep going now",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "ralph");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /"keep going" -> ralph/);
+      assert.doesNotMatch(message, /denied workflow keyword/i);
+      assert.doesNotMatch(message, /mode transiting:/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("ignores generic wrapper fields so metadata cannot trigger workflow routing or Stop blocking", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-wrapper-metadata-"));
     try {

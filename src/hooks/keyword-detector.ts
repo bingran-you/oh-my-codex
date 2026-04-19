@@ -40,6 +40,12 @@ export interface KeywordMatch {
   priority: number;
 }
 
+const ACTIVE_SKILL_CONTINUATION_PATTERNS: RegExp[] = [
+  /^[\\/]?\s*keep going(?:\s+now)?[.!]?\s*$/i,
+  /^[\\/]?\s*continue(?:\s+now)?[.!]?\s*$/i,
+  /^[\\/]?\s*resume(?:\s+now)?[.!]?\s*$/i,
+];
+
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -559,6 +565,59 @@ export function detectPrimaryKeyword(text: string): KeywordMatch | null {
   return matches.length > 0 ? matches[0] : null;
 }
 
+function isActiveSkillContinuationPrompt(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return ACTIVE_SKILL_CONTINUATION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isNamedActiveSkillContinuationPrompt(text: string, skill: string): boolean {
+  const normalizedSkill = escapeRegex(skill.trim());
+  if (!normalizedSkill) return false;
+  return new RegExp(
+    `^[\\\\/]?\\s*${normalizedSkill}\\b(?:\\s+(?:keep\\s+going|continue|resume))(?:\\s+now)?[.!]?\\s*$`,
+    'i',
+  ).test(text.trim());
+}
+
+function shouldReusePreviousSkillForContinuation(
+  text: string,
+  previous: SkillActiveState | null,
+): boolean {
+  const previousSkill = safeString(previous?.skill).trim();
+  if (!previousSkill || previous?.active !== true || !isTrackedWorkflowMode(previousSkill)) {
+    return false;
+  }
+
+  return isActiveSkillContinuationPrompt(text)
+    || isNamedActiveSkillContinuationPrompt(text, previousSkill);
+}
+
+function resolveContinuationKeywordMatch(
+  text: string,
+  previous: SkillActiveState | null,
+  fallbackMatch: KeywordMatch | null,
+): KeywordMatch | null {
+  const previousSkill = safeString(previous?.skill).trim();
+  if (!previousSkill || previous?.active !== true || !isTrackedWorkflowMode(previousSkill)) {
+    return fallbackMatch;
+  }
+
+  if (extractExplicitSkillInvocations(text).length > 0) {
+    return fallbackMatch;
+  }
+
+  if (!shouldReusePreviousSkillForContinuation(text, previous) && !safeString(fallbackMatch?.keyword).trim().startsWith('$')) {
+    return fallbackMatch;
+  }
+
+  return {
+    keyword: safeString(previous?.keyword).trim() || `$${previousSkill}`,
+    skill: previousSkill,
+    priority: fallbackMatch?.priority ?? 0,
+  };
+}
+
 function initialWorkflowPhaseForMode(mode: TrackedWorkflowMode): SkillActivePhase {
   return mode === 'autoresearch' ? 'executing' : 'planning';
 }
@@ -595,10 +654,6 @@ function selectRootSkillStateCopy(
 }
 
 export async function recordSkillActivation(input: RecordSkillActivationInput): Promise<SkillActiveState | null> {
-  const match = detectPrimaryKeyword(input.text);
-  if (!match) return null;
-
-  const nowIso = input.nowIso ?? new Date().toISOString();
   const rootStatePath = join(input.stateDir, SKILL_ACTIVE_STATE_FILE);
   const sessionStatePath = input.sessionId
     ? join(input.stateDir, 'sessions', input.sessionId, SKILL_ACTIVE_STATE_FILE)
@@ -606,6 +661,14 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const previousRoot = await readExistingSkillState(rootStatePath);
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
   const previous = previousSession ?? previousRoot;
+  const match = resolveContinuationKeywordMatch(
+    input.text,
+    previous,
+    detectPrimaryKeyword(input.text),
+  );
+  if (!match) return null;
+
+  const nowIso = input.nowIso ?? new Date().toISOString();
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
   const matches = detectKeywords(input.text);
   const hasCancelIntent = matches.some((entry) => entry.skill === 'cancel');
@@ -644,6 +707,8 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 
   const sameSkill = previous?.active === true && previous.skill === match.skill;
   const sameKeyword = previous?.keyword?.toLowerCase() === match.keyword.toLowerCase();
+  const sameSkillContinuation = sameSkill && shouldReusePreviousSkillForContinuation(input.text, previous);
+  const preserveActivatedAt = sameSkill && (sameKeyword || sameSkillContinuation);
   const previousEntries = listActiveSkills(previous ?? {});
   const previousWorkflowEntries = previousEntries.filter((entry) => (
     isTrackedWorkflowMode(entry.skill)
@@ -720,10 +785,12 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 
       const existingEntry = nextWorkflowEntries.find((entry) => entry.skill === requestedMode);
       if (existingEntry) {
-        existingEntry.phase = requestedMode === match.skill ? initialWorkflowPhaseForMode(requestedMode) : existingEntry.phase;
+        existingEntry.phase = requestedMode === match.skill && !sameSkill
+          ? initialWorkflowPhaseForMode(requestedMode)
+          : existingEntry.phase;
         existingEntry.active = true;
         existingEntry.activated_at = requestedMode === match.skill
-          ? (sameSkill && sameKeyword ? existingEntry.activated_at || previous?.activated_at || nowIso : nowIso)
+          ? (preserveActivatedAt ? existingEntry.activated_at || previous?.activated_at || nowIso : nowIso)
           : existingEntry.activated_at;
         existingEntry.updated_at = nowIso;
         existingEntry.session_id = input.sessionId ?? existingEntry.session_id;
@@ -738,7 +805,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           skill: requestedMode,
           phase: requestedMode === match.skill ? initialWorkflowPhaseForMode(requestedMode) : undefined,
           active: true,
-          activated_at: requestedMode === match.skill && sameSkill && sameKeyword
+          activated_at: requestedMode === match.skill && preserveActivatedAt
             ? previous?.activated_at
             : nowIso,
           updated_at: nowIso,
@@ -817,7 +884,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     skill: match.skill,
     keyword: match.keyword,
     phase: initialWorkflowPhaseForMode(match.skill as TrackedWorkflowMode),
-    activated_at: sameSkill && sameKeyword ? previous.activated_at : nowIso,
+    activated_at: preserveActivatedAt ? previous.activated_at : nowIso,
     updated_at: nowIso,
     source: 'keyword-detector',
     session_id: input.sessionId,
@@ -827,7 +894,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       skill: match.skill,
       phase: initialWorkflowPhaseForMode(match.skill as TrackedWorkflowMode),
       active: true,
-      activated_at: sameSkill && sameKeyword ? previous?.activated_at : nowIso,
+      activated_at: preserveActivatedAt ? previous?.activated_at : nowIso,
       updated_at: nowIso,
       session_id: input.sessionId,
       thread_id: input.threadId,
