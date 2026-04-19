@@ -85,6 +85,12 @@ export interface RecordSkillActivationInput {
   nowIso?: string;
 }
 
+export interface DeepInterviewModeStatePersistenceInput {
+  sessionId?: string;
+  threadId?: string;
+  turnId?: string;
+}
+
 export const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'] as const;
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
@@ -146,6 +152,11 @@ function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewIn
   };
 }
 
+function preserveCompletedDeepInterviewPhase(previousModeState: DeepInterviewModeState | null): string {
+  if (!previousModeState || previousModeState.active !== false) return '';
+  return safeString(previousModeState.current_phase).trim();
+}
+
 function releaseDeepInterviewInputLock(
   previous: DeepInterviewInputLock | undefined,
   nowIso: string,
@@ -204,14 +215,19 @@ async function readJsonStateIfExists(path: string): Promise<Record<string, unkno
   }
 }
 
-async function persistDeepInterviewModeState(
+export async function persistDeepInterviewModeState(
   stateDir: string,
   nextSkill: SkillActiveState | null,
   nowIso: string,
   previousSkill: SkillActiveState | null,
-  input: RecordSkillActivationInput,
+  input: DeepInterviewModeStatePersistenceInput,
 ): Promise<void> {
-  const statePath = join(stateDir, DEEP_INTERVIEW_STATE_FILE);
+  const statePath = resolveSeedStateFilePath(
+    stateDir,
+    'deep-interview',
+    nextSkill?.session_id ?? previousSkill?.session_id ?? input.sessionId,
+  ).absolutePath;
+  await mkdir(dirname(statePath), { recursive: true });
   const previousModeState = await readExistingDeepInterviewState(statePath);
 
   if (nextSkill?.skill === 'deep-interview' && nextSkill.active) {
@@ -237,7 +253,7 @@ async function persistDeepInterviewModeState(
   const nextState: DeepInterviewModeState = {
     active: false,
     mode: 'deep-interview',
-    current_phase: 'completing',
+    current_phase: preserveCompletedDeepInterviewPhase(previousModeState) || 'completing',
     started_at: previousModeState?.started_at || previousSkill?.activated_at || nowIso,
     updated_at: nowIso,
     completed_at: nowIso,

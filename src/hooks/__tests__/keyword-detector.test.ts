@@ -11,6 +11,7 @@ import {
   DEEP_INTERVIEW_STATE_FILE,
   DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
   DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
+  persistDeepInterviewModeState,
 } from '../keyword-detector.js';
 import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
@@ -890,6 +891,47 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.active, true);
       assert.equal(modeState.current_phase, 'intent-first');
       assert.equal(modeState.input_lock?.active, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('creates the session-scoped deep-interview state directory before persisting mode state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-session-dir-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+
+      await persistDeepInterviewModeState(
+        stateDir,
+        {
+          version: 1,
+          active: true,
+          skill: 'deep-interview',
+          keyword: 'deep interview',
+          phase: 'planning',
+          activated_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:00:00.000Z',
+          source: 'keyword-detector',
+          session_id: 'sess-sync',
+          input_lock: {
+            active: true,
+            scope: 'deep-interview-auto-approval',
+            acquired_at: '2026-02-25T00:00:00.000Z',
+            blocked_inputs: [...DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS],
+            message: DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
+          },
+        },
+        '2026-02-25T00:00:00.000Z',
+        null,
+        { sessionId: 'sess-sync' },
+      );
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-sync', DEEP_INTERVIEW_STATE_FILE), 'utf-8'),
+      ) as { active: boolean; mode: string };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.mode, 'deep-interview');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

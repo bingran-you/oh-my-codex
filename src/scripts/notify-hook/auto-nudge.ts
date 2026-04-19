@@ -22,6 +22,7 @@ import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPa
 import { stripOrchestrationIntentTags } from './orchestration-intent.js';
 import { buildCapturePaneArgv, DEFAULT_MARKER, tmuxHookExplicitlyDisablesInjection } from '../tmux-hook-engine.js';
 import { readAutoresearchCompletionStatus } from '../../autoresearch/skill-validation.js';
+import { persistDeepInterviewModeState } from '../../hooks/keyword-detector.js';
 import {
   isManagedOmxSession,
   resolveManagedCurrentPane,
@@ -37,6 +38,7 @@ export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto
 export const DEFAULT_AUTO_NUDGE_RESPONSE = 'continue with the current task only if it is already authorized';
 const DEEP_INTERVIEW_ERROR_PATTERNS = [' error', ' failed', ' failure', ' exception', 'unable to continue', 'cannot continue', 'could not continue'];
 const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
+const DEEP_INTERVIEW_SUCCESS_PATTERNS = ['interview completed', 'interview complete', 'interview finished', 'final summary ready'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES = new Set(['next i should']);
 const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
@@ -98,6 +100,10 @@ function isDeepInterviewAbortInput(text) {
 function hasAnySubstring(text, patterns) {
   const lower = safeString(text).toLowerCase();
   return patterns.some((pattern) => lower.includes(pattern));
+}
+
+function looksLikeDeepInterviewSuccess(text) {
+  return hasAnySubstring(text, DEEP_INTERVIEW_SUCCESS_PATTERNS);
 }
 
 export function isDeepInterviewAutoApprovalLocked(skillState) {
@@ -187,6 +193,78 @@ async function loadSkillActiveState(stateDir, sessionId) {
 
 async function persistSkillActiveState(stateDir, sessionId, state) {
   await writeScopedJson(stateDir, SKILL_ACTIVE_STATE_FILE, sessionId, state).catch(() => {});
+}
+
+function cloneSkillActiveState(state) {
+  if (!state || typeof state !== 'object') return null;
+  return {
+    ...state,
+    input_lock: state.input_lock
+      ? {
+        ...state.input_lock,
+        blocked_inputs: Array.isArray(state.input_lock.blocked_inputs)
+          ? [...state.input_lock.blocked_inputs]
+          : state.input_lock.blocked_inputs,
+      }
+      : state.input_lock,
+  };
+}
+
+export async function syncSkillStateFromTurn(stateDir, payload) {
+  const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
+  const latestUserInput = latestUserInputFromPayload(payload);
+  const invocationSessionId = resolveInvocationSessionId(payload);
+  let skillState = await loadSkillActiveState(stateDir, invocationSessionId);
+  let releaseReason = null;
+
+  if (!skillState) {
+    return { invocationSessionId, skillState: null, releaseReason };
+  }
+
+  const previousSkillState = cloneSkillActiveState(skillState);
+  const previousPhase = normalizeSkillPhase(skillState.phase);
+  const inferredPhase = inferSkillPhaseFromText(lastMessage, previousPhase);
+  const explicitDeepInterviewSuccess = skillState.skill === 'deep-interview' && looksLikeDeepInterviewSuccess(lastMessage);
+  const nextPhase = skillState.skill === 'deep-interview'
+    && inferredPhase === 'completing'
+    && previousPhase !== 'completing'
+    && !explicitDeepInterviewSuccess
+    ? previousPhase
+    : inferredPhase;
+  skillState.phase = nextPhase;
+  skillState.active = nextPhase !== 'completing';
+
+  if (skillState.skill === 'autoresearch') {
+    const completion = await readAutoresearchCompletionStatus(payload.cwd || process.cwd(), invocationSessionId);
+    skillState.validation_mode = completion.validationMode;
+    skillState.autoresearch_completion_reason = completion.reason;
+    skillState.completion_artifact_path = completion.artifactPath;
+    if (completion.complete) {
+      skillState.phase = 'completing';
+      skillState.active = false;
+    } else if (inferredPhase === 'completing') {
+      skillState.phase = previousPhase === 'completing' ? 'reviewing' : previousPhase;
+      skillState.active = true;
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  skillState.updated_at = nowIso;
+  releaseReason = inferDeepInterviewReleaseReason({ skillState, latestUserInput, lastMessage });
+  if (releaseReason && isDeepInterviewAutoApprovalLocked(skillState)) {
+    releaseDeepInterviewInputLock(skillState, releaseReason, nowIso);
+  }
+  await persistSkillActiveState(stateDir, invocationSessionId, skillState);
+
+  if (skillState.skill === 'deep-interview' || previousSkillState?.skill === 'deep-interview') {
+    await persistDeepInterviewModeState(stateDir, skillState, nowIso, previousSkillState, {
+      sessionId: invocationSessionId,
+      threadId: safeString(payload?.['thread-id'] || payload?.thread_id || ''),
+      turnId: safeString(payload?.['turn-id'] || payload?.turn_id || ''),
+    });
+  }
+
+  return { invocationSessionId, skillState, releaseReason };
 }
 
 
@@ -517,37 +595,9 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   }
 
   const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
-  const latestUserInput = latestUserInputFromPayload(payload);
-  const invocationSessionId = resolveInvocationSessionId(payload);
-  let skillState = await loadSkillActiveState(stateDir, invocationSessionId);
-  let releaseReason = null;
+  const { invocationSessionId, skillState, releaseReason } = await syncSkillStateFromTurn(stateDir, payload);
 
   try {
-    if (skillState) {
-      const previousPhase = normalizeSkillPhase(skillState.phase);
-      const inferredPhase = inferSkillPhaseFromText(lastMessage, previousPhase);
-      skillState.phase = inferredPhase;
-      skillState.active = inferredPhase !== 'completing';
-
-      if (skillState.skill === 'autoresearch') {
-        const completion = await readAutoresearchCompletionStatus(cwd, invocationSessionId);
-        skillState.validation_mode = completion.validationMode;
-        skillState.autoresearch_completion_reason = completion.reason;
-        skillState.completion_artifact_path = completion.artifactPath;
-        if (completion.complete) {
-          skillState.phase = 'completing';
-          skillState.active = false;
-        } else if (inferredPhase === 'completing') {
-          skillState.phase = previousPhase === 'completing' ? 'reviewing' : previousPhase;
-          skillState.active = true;
-        }
-      }
-
-      skillState.updated_at = new Date().toISOString();
-      releaseReason = inferDeepInterviewReleaseReason({ skillState, latestUserInput, lastMessage });
-      await persistSkillActiveState(stateDir, invocationSessionId, skillState);
-    }
-
     const nudgeStatePath = await getScopedStatePath(stateDir, 'auto-nudge-state.json', invocationSessionId);
     let nudgeState = await readScopedJsonIfExists(stateDir, 'auto-nudge-state.json', invocationSessionId, null);
     if (!nudgeState || typeof nudgeState !== 'object') {
@@ -635,8 +685,10 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
       return;
     }
 
-    const deepInterviewLockActive = isDeepInterviewAutoApprovalLocked(skillState) && !releaseReason;
-    if (deepInterviewLockActive) {
+    const blockedAutoApproval = isDeepInterviewAutoApprovalLocked(skillState)
+      && !releaseReason
+      && isBlockedAutoApprovalInput(effectiveResponse, skillState.input_lock?.blocked_inputs);
+    if (blockedAutoApproval) {
       const blockedMessage = skillState.input_lock?.message || DEEP_INTERVIEW_INPUT_LOCK_MESSAGE;
       await logTmuxHookEvent(logsDir, {
         timestamp: new Date().toISOString(),
@@ -645,9 +697,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
         response: effectiveResponse,
         source,
         blocked_by: 'deep-interview-lock',
-        block_kind: isBlockedAutoApprovalInput(effectiveResponse, skillState.input_lock?.blocked_inputs)
-          ? 'blocked-auto-approval'
-          : 'input-lock-active',
+        block_kind: 'blocked-auto-approval',
         message: blockedMessage,
         suppressed: true,
       }).catch(() => {});

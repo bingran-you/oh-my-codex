@@ -1464,6 +1464,7 @@ exit 0
       const logsDir = join(omxDir, 'logs');
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -1492,7 +1493,7 @@ exit 0
       assert.deepEqual(skillState.input_lock?.blocked_inputs, DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS);
       assert.match(skillState.input_lock?.message || '', /Deep interview is active/i);
 
-      const modeState = JSON.parse(await readFile(join(stateDir, 'deep-interview-state.json'), 'utf-8')) as {
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
         active: boolean;
         mode: string;
         current_phase: string;
@@ -1502,6 +1503,65 @@ exit 0
       assert.equal(modeState.mode, 'deep-interview');
       assert.equal(modeState.current_phase, 'intent-first');
       assert.equal(modeState.input_lock?.active, true);
+    });
+  });
+
+  it('releases deep-interview mode state on normal completion without waiting for later keyword input', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const activated = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'input-messages': ['please run a deep interview first'],
+        'last-assistant-message': 'Round 1 | Target: Goal Clarity',
+      });
+      assert.equal(activated.status, 0, `activation hook failed: ${activated.stderr || activated.stdout}`);
+
+      const completed = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'input-messages': ['continue'],
+        'last-assistant-message': 'Interview completed. Final summary ready.',
+      });
+      assert.equal(completed.status, 0, `completion hook failed: ${completed.stderr || completed.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; exit_reason?: string; released_at?: string };
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, false);
+      assert.equal(skillState.input_lock?.exit_reason, 'success');
+      assert.ok(skillState.input_lock?.released_at);
+
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        completed_at?: string;
+        input_lock?: { active: boolean; exit_reason?: string; released_at?: string };
+      };
+      assert.equal(modeState.active, false);
+      assert.equal(modeState.current_phase, 'completing');
+      assert.ok(modeState.completed_at);
+      assert.equal(modeState.input_lock?.active, false);
+      assert.equal(modeState.input_lock?.exit_reason, 'success');
+      assert.ok(modeState.input_lock?.released_at);
     });
   });
 
@@ -1650,6 +1710,66 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.doesNotMatch(tmuxLog, /Deep interview is active; auto-approval shortcuts are blocked until the interview finishes\. \[OMX_TMUX_INJECT\]/);
       assert.equal(tmuxLog.includes(`send-keys -t %99 -l ${NEXT_I_SHOULD_RESPONSE} [OMX_TMUX_INJECT]`), false);
+    });
+  });
+
+  it('allows non-blocked custom deep-interview auto-nudge responses to continue', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const capturePath = join(cwd, 'capture.txt');
+      const customResponse = 'advance with the next interview question';
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, response: customResponse },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'executing',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeFile(capturePath, 'OpenAI Codex\n› ');
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Keep going and finish the cleanup.',
+      }, {
+        OMX_TEST_CAPTURE_FILE: capturePath,
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(
+        tmuxLog,
+        new RegExp(`send-keys -t %99 -l ${customResponse} \\[OMX_TMUX_INJECT\\]`),
+        'should allow a non-blocked continuation response during deep interview',
+      );
     });
   });
 
@@ -1825,6 +1945,79 @@ exit 0
       assert.equal(skillState.input_lock?.active, false);
       assert.ok(skillState.input_lock?.released_at);
       assert.equal(skillState.input_lock?.exit_reason, 'success');
+    });
+  });
+
+  it('does not release deep-interview state from generic progress prose', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'executing',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeJson(join(sessionStateDir, 'deep-interview-state.json'), {
+        active: true,
+        mode: 'deep-interview',
+        current_phase: 'intent-first',
+        started_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+      });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Summary so far: done with the first round of questions.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; released_at?: string; exit_reason?: string };
+      };
+      assert.equal(skillState.active, true);
+      assert.notEqual(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, true);
+      assert.equal(skillState.input_lock?.released_at || '', '');
+      assert.equal(skillState.input_lock?.exit_reason || '', '');
+
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'deep-interview-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        completed_at?: string;
+      };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'intent-first');
+      assert.equal(modeState.completed_at || '', '');
     });
   });
 
