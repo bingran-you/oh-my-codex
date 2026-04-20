@@ -472,6 +472,56 @@ describe("OMX launcher path resolution", () => {
     }
   });
 
+  it("prefers explicit argv1 over an ambient OMX_ENTRY_PATH override", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-explicit-start-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env: {
+          ...process.env,
+          [OMX_ENTRY_PATH_ENV]: "/tmp/ambient-omx.js",
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, launcherPath);
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records the default launcher path when called without an explicit argv1", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-default-record-"));
+    const originalArgv1 = process.argv[1];
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      delete process.env[OMX_ENTRY_PATH_ENV];
+      delete process.env[OMX_STARTUP_CWD_ENV];
+      process.argv[1] = launcherPath;
+
+      rememberOmxLaunchContext({
+        cwd: startupCwd,
+        env: process.env,
+      });
+
+      assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], launcherPath);
+    } finally {
+      process.argv[1] = originalArgv1;
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the packaged CLI entry when argv1 points at a non-CLI script", async () => {
     const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-cli-fallback-start-"));
     const packageRootDir = await mkdtemp(join(tmpdir(), "omx-launcher-cli-fallback-root-"));
