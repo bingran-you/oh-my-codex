@@ -3522,6 +3522,55 @@ esac
     }
   });
 
+  it("does not block Stop from stale current-session Ralph state when session.json points to a dead owner", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-current-session-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-dead"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: "sess-dead",
+        cwd,
+        pid: Number.MAX_SAFE_INTEGER,
+        started_at: "2026-01-01T00:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", "sess-dead", "ralph-state.json"), {
+        active: true,
+        current_phase: "verifying",
+        session_id: "sess-dead",
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: true,
+        skill: "team",
+        phase: "team-exec",
+        active_skills: [{ skill: "team", phase: "team-exec", active: true, session_id: "sess-dead" }],
+      });
+      await writeJson(join(stateDir, "native-stop-state.json"), {
+        sessions: {
+          "sess-dead": {
+            last_signature: "ralph-stop|sess-dead|thread-1|no-message|verifying",
+            updated_at: "2026-04-20T21:00:00.000Z",
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-dead",
+          thread_id: "thread-1",
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop from another session-scoped Ralph state when an explicit session_id has no active Ralph state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-explicit-session-ralph-"));
     try {

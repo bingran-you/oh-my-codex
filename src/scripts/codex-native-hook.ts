@@ -10,7 +10,12 @@ import {
 } from "../state/skill-active.js";
 import { readSubagentSessionSummary } from "../subagents/tracker.js";
 import { resolveCanonicalTeamStateRoot } from "../team/state-root.js";
-import { readUsableSessionState, reconcileNativeSessionStart } from "../hooks/session.js";
+import {
+  isSessionStateUsable,
+  readSessionState,
+  readUsableSessionState,
+  reconcileNativeSessionStart,
+} from "../hooks/session.js";
 import {
   appendTeamEvent,
   readTeamLeaderAttention,
@@ -278,8 +283,14 @@ async function readActiveRalphState(
   preferredSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const cwd = resolve(stateDir, "..", "..");
-  const sessionInfo = await readUsableSessionState(cwd);
-  const currentOmxSessionId = safeString(sessionInfo?.session_id).trim();
+  const [rawSessionInfo, usableSessionInfo] = await Promise.all([
+    readSessionState(cwd),
+    readUsableSessionState(cwd),
+  ]);
+  const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
+  const staleCurrentSessionId = rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
+    ? safeString(rawSessionInfo.session_id).trim()
+    : "";
   const sessionCandidates = [...new Set([
     safeString(preferredSessionId).trim(),
     currentOmxSessionId,
@@ -289,6 +300,9 @@ async function readActiveRalphState(
   // That is intentionally stricter than generic state MCP reads: do not scan sibling
   // session scopes or fall back to root when a current/explicit session is in play.
   for (const sessionId of sessionCandidates) {
+    if (staleCurrentSessionId && sessionId === staleCurrentSessionId) {
+      continue;
+    }
     const sessionScoped = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId);
     if (sessionScoped?.active === true && shouldContinueRun(sessionScoped)) {
       return sessionScoped;
