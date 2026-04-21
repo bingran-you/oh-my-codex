@@ -49,6 +49,7 @@ import {
 import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
+import { shellEscapeSingle } from "../hud/tmux.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
 import { shouldContinueRun } from "../runtime/run-loop.js";
@@ -62,6 +63,7 @@ import {
   type TriageStateFile,
 } from "../hooks/triage-state.js";
 import { isPendingDeepInterviewQuestionEnforcement } from "../question/deep-interview.js";
+import { resolveOmxCliEntryPath } from "../utils/paths.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -564,7 +566,17 @@ async function buildSessionStartContext(
   return sections.length > 0 ? sections.join("\n\n") : null;
 }
 
-function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveState | null): string | null {
+function buildDeepInterviewQuestionBridgeInstruction(cwd: string): string {
+  const omxBin = resolveOmxCliEntryPath({ cwd }) || process.argv[1] || "omx";
+  const bridgeCommand = `${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} question`;
+  return `Deep-interview must ask each interview round via \`omx question\`; do not fall back to \`request_user_input\` or plain-text questioning. If bare \`omx question\` is unavailable in this reused session, use the current-session CLI bridge command: \`${bridgeCommand}\`. Stop remains blocked while a deep-interview question obligation is pending.`;
+}
+
+function buildAdditionalContextMessage(
+  prompt: string,
+  skillState?: SkillActiveState | null,
+  cwd: string = process.cwd(),
+): string | null {
   if (!prompt) return null;
   const promptPriorityMessage = buildPromptPriorityMessage(prompt);
   const matches = detectKeywords(prompt);
@@ -584,7 +596,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
     ? "Prompt-side `$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`. Use `omx ralph --prd ...` only when you explicitly want the PRD-gated CLI startup path."
     : null;
   const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
-    ? "Deep-interview must ask each interview round via `omx question`; do not fall back to `request_user_input` or plain-text questioning. Stop remains blocked while a deep-interview question obligation is pending."
+    ? buildDeepInterviewQuestionBridgeInstruction(cwd)
     : null;
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
@@ -1772,7 +1784,7 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "SessionStart" || hookEventName === "UserPromptSubmit") {
     const additionalContext = hookEventName === "SessionStart"
       ? await buildSessionStartContext(cwd, canonicalSessionId || nativeSessionId)
-      : (buildAdditionalContextMessage(readPromptText(payload), skillState) ?? triageAdditionalContext);
+      : (buildAdditionalContextMessage(readPromptText(payload), skillState, cwd) ?? triageAdditionalContext);
     if (additionalContext) {
       outputJson = {
         hookSpecificOutput: {
