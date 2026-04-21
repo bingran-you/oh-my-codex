@@ -8,6 +8,7 @@ import {
   normalizeRunOutcome,
 } from '../run-outcome.js';
 import {
+  compatibilityRunOutcomeFromTerminalLifecycleOutcome,
   inferTerminalLifecycleOutcome,
   normalizeTerminalLifecycleOutcome,
   preferredRunOutcomeForLifecycleOutcome,
@@ -116,5 +117,14 @@ describe('run outcome contract', () => {
     assert.equal(preferredRunOutcomeForLifecycleOutcome('failed'), 'failed');
     assert.equal(preferredRunOutcomeForLifecycleOutcome('userinterlude'), 'cancelled');
     assert.equal(preferredRunOutcomeForLifecycleOutcome('askuserQuestion'), 'blocked_on_user');
+  });
+
+  it('keeps terminal lifecycle compatibility helpers aligned with the shared run outcome contract', () => {
+    for (const outcome of ['finished', 'blocked', 'failed', 'userinterlude', 'askuserQuestion'] as const) {
+      assert.equal(
+        preferredRunOutcomeForLifecycleOutcome(outcome),
+        compatibilityRunOutcomeFromTerminalLifecycleOutcome(outcome),
+      );
+    }
   });
 });
