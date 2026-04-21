@@ -19,6 +19,7 @@ import {
   repoBuiltExploreHarnessCommand,
   resolveExploreHarnessCommand,
   resolveExploreHarnessCommandWithHydration,
+  resolveExploreEnv,
   resolveExploreSparkShellRoute,
   resolvePackagedExploreHarnessCommand,
 } from '../explore.js';
@@ -682,6 +683,39 @@ describe('buildExploreHarnessArgs', () => {
       await rm(codexHome, { recursive: true, force: true });
     }
   });
+
+  it('applies persisted project CODEX_HOME fallback before reading explore config overrides', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-project-codex-home-'));
+    const badHome = join(wd, 'home-as-file');
+    await writeFile(badHome, 'not-a-directory');
+    await mkdir(join(wd, '.omx'), { recursive: true });
+    await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+    await mkdir(join(wd, '.codex'), { recursive: true });
+    await writeFile(join(wd, '.codex', '.omx-config.json'), JSON.stringify({
+      env: {
+        OMX_DEFAULT_STANDARD_MODEL: 'standard-project',
+        OMX_DEFAULT_SPARK_MODEL: 'spark-project',
+      },
+    }));
+
+    try {
+      const env = resolveExploreEnv(wd, { HOME: badHome } as NodeJS.ProcessEnv);
+      assert.equal(env.CODEX_HOME, join(wd, '.codex'));
+      const args = buildExploreHarnessArgs('find auth', wd, env, '/pkg');
+      assert.deepEqual(args.slice(4), [
+        '--prompt-file',
+        '/pkg/prompts/explore-harness.md',
+        '--instructions-file',
+        '/pkg/templates/model-instructions/explore-lightweight-AGENTS.md',
+        '--model-spark',
+        'spark-project',
+        '--model-fallback',
+        'standard-project',
+      ]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveExploreSparkShellRoute', () => {
@@ -861,6 +895,34 @@ describe('exploreCommand', () => {
       if (shouldSkipForSpawnPermissions(result.error)) return;
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(result.stdout, '# Answer\nReady to proceed\n');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('passes project-local CODEX_HOME to the harness when persisted setup scope is project', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-project-codex-home-e2e-'));
+    try {
+      const stub = join(wd, 'explore-stub.sh');
+      const capturePath = join(wd, 'capture.txt');
+      const badHome = join(wd, 'home-as-file');
+      await writeFile(badHome, 'not-a-directory');
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(
+        stub,
+        `#!/bin/sh\nprintf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > ${JSON.stringify(capturePath)}\nprintf '# Answer\\nReady to proceed\\n'\n`,
+      );
+      await chmod(stub, 0o755);
+
+      const result = runOmx(wd, ['explore', '--prompt', 'find auth'], {
+        HOME: badHome,
+        OMX_EXPLORE_BIN: stub,
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '# Answer\nReady to proceed\n');
+      assert.equal(await readFile(capturePath, 'utf-8'), `CODEX_HOME=${join(wd, '.codex')}\n`);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

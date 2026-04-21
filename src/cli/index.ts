@@ -48,6 +48,17 @@ import {
   getStateDir,
   listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
+import {
+  resolveCodexConfigPathForLaunch,
+  resolveCodexHomeForLaunch,
+} from "./codex-home.js";
+
+export {
+  readPersistedSetupPreferences,
+  readPersistedSetupScope,
+  resolveCodexConfigPathForLaunch,
+  resolveCodexHomeForLaunch,
+} from "./codex-home.js";
 import { SKILL_ACTIVE_STATE_MODE, syncCanonicalSkillStateForMode } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
@@ -312,66 +323,6 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
 export interface ResolvedCliInvocation {
   command: CliCommand;
   launchArgs: string[];
-}
-
-/**
- * Legacy scope values that may appear in persisted setup-scope.json files.
- * Both 'project-local' (renamed) and old 'project' (minimal, removed) are
- * migrated to the current 'project' scope on read.
- */
-const LEGACY_SCOPE_MIGRATION_SYNC: Record<string, SetupScope> = {
-  "project-local": "project",
-};
-
-export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
-  return readPersistedSetupPreferences(cwd)?.scope;
-}
-
-export function readPersistedSetupPreferences(
-  cwd: string,
-): Partial<{ scope: SetupScope }> | undefined {
-  const scopePath = join(cwd, ".omx", "setup-scope.json");
-  if (!existsSync(scopePath)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(scopePath, "utf-8")) as Partial<{
-      scope: string;
-    }>;
-    const persisted: Partial<{ scope: SetupScope }> = {};
-    if (typeof parsed.scope === "string") {
-      if (SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
-        persisted.scope = parsed.scope as SetupScope;
-      }
-      const migrated = LEGACY_SCOPE_MIGRATION_SYNC[parsed.scope];
-      if (migrated) persisted.scope = migrated;
-    }
-    return Object.keys(persisted).length > 0 ? persisted : undefined;
-  } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
-    // Ignore malformed persisted scope and use defaults.
-  }
-  return undefined;
-}
-
-export function resolveCodexHomeForLaunch(
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
-  const persistedScope = readPersistedSetupScope(cwd);
-  if (persistedScope === "project") {
-    return join(cwd, ".codex");
-  }
-  return undefined;
-}
-
-export function resolveCodexConfigPathForLaunch(
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
-  return codexHomeOverride
-    ? join(codexHomeOverride, "config.toml")
-    : codexConfigPath();
 }
 
 export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {

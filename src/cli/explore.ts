@@ -25,6 +25,7 @@ import {
   getPackageVersion,
 } from './native-assets.js';
 import { getWikiDir, queryWiki } from '../wiki/index.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 export const EXPLORE_USAGE = [
   'Usage: omx explore --prompt "<prompt>"',
@@ -433,6 +434,16 @@ export function buildExploreHarnessArgs(
   ];
 }
 
+export function resolveExploreEnv(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
+  return codexHomeOverride
+    ? { ...env, CODEX_HOME: codexHomeOverride }
+    : env;
+}
+
 export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<string> {
   if (parsed.prompt) return parsed.prompt;
   if (!parsed.promptFile) throw exploreUsageError('Missing prompt. Provide --prompt or --prompt-file.');
@@ -445,10 +456,12 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 export async function exploreCommand(args: string[]): Promise<void> {
   const parsed = parseExploreArgs(args);
   const prompt = await loadExplorePrompt(parsed);
+  const cwd = process.cwd();
+  const exploreEnv = resolveExploreEnv(cwd, process.env);
   const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
   if (sparkShellRoute) {
     try {
-      await runExploreViaSparkShell(sparkShellRoute, process.env);
+      await runExploreViaSparkShell(sparkShellRoute, exploreEnv);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -457,13 +470,13 @@ export async function exploreCommand(args: string[]): Promise<void> {
   }
 
   const packageRoot = getPackageRoot();
-  assertBuiltinExploreHarnessSupported(process.platform, process.env);
-  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, process.env);
-  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, process.cwd(), process.env, packageRoot)];
+  assertBuiltinExploreHarnessSupported(process.platform, exploreEnv);
+  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, exploreEnv);
+  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, cwd, exploreEnv, packageRoot)];
 
   const { result } = spawnPlatformCommandSync(harness.command, harnessArgs, {
-    cwd: process.cwd(),
-    env: process.env,
+    cwd,
+    env: exploreEnv,
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
