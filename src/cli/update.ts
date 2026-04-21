@@ -42,6 +42,7 @@ export interface UpdateExecutionResult {
 
 type RunGlobalUpdateResult = { ok: boolean; stderr: string };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
+type SpawnSyncLike = typeof spawnSync;
 
 const PACKAGE_NAME = 'oh-my-codex';
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12h
@@ -152,16 +153,20 @@ interface UpdateDependencies {
   askYesNo: typeof askYesNo;
   fetchLatestVersion: typeof fetchLatestVersion;
   getCurrentVersion: typeof getCurrentVersion;
+  readUserInstallStamp: typeof readUserInstallStamp;
   runGlobalUpdate: typeof runGlobalUpdate;
   runSetupRefresh: (cwd: string) => Promise<RunSetupRefreshResult>;
+  writeUpdateState: typeof writeUpdateState;
 }
 
 const defaultUpdateDependencies: UpdateDependencies = {
   askYesNo,
   fetchLatestVersion,
   getCurrentVersion,
+  readUserInstallStamp,
   runGlobalUpdate,
   runSetupRefresh,
+  writeUpdateState,
 };
 
 function stripLeadingV(version: string): string {
@@ -217,6 +222,13 @@ export function isInstallVersionBump(
   return stripLeadingV(currentVersion) !== stripLeadingV(stamp.installed_version);
 }
 
+function doesSetupStampMatchVersion(
+  currentVersion: string,
+  stamp: UserInstallStamp | null,
+): boolean {
+  return stripLeadingV(stamp?.setup_completed_version ?? '') === stripLeadingV(currentVersion);
+}
+
 function resolveGlobalInstallRoot(): string | null {
   const result = spawnSync('npm', ['root', '-g'], {
     encoding: 'utf-8',
@@ -259,28 +271,15 @@ export async function resolveInstalledCliEntry(globalInstallRoot: string): Promi
   return existsSync(cliEntry) ? cliEntry : null;
 }
 
-async function runSetupRefresh(cwd: string): Promise<RunSetupRefreshResult> {
-  const globalInstallRoot = resolveGlobalInstallRoot();
-  if (!globalInstallRoot) {
-    return {
-      ok: false,
-      stderr: 'Unable to resolve the npm global install root after updating.',
-    };
-  }
-
-  const cliEntry = await resolveInstalledCliEntry(globalInstallRoot);
-  if (!cliEntry) {
-    return {
-      ok: false,
-      stderr: `Unable to find the updated OMX CLI entry under ${join(globalInstallRoot, PACKAGE_NAME)}.`,
-    };
-  }
-
-  const result = spawnSync(process.execPath, [cliEntry, 'setup'], {
+export function spawnInstalledSetupRefresh(
+  cliEntry: string,
+  cwd: string,
+  spawnProcess: SpawnSyncLike = spawnSync,
+): RunSetupRefreshResult {
+  const result = spawnProcess(process.execPath, [cliEntry, 'setup'], {
     cwd,
     env: process.env,
     stdio: 'inherit',
-    timeout: 120000,
     windowsHide: true,
   });
 
@@ -298,6 +297,26 @@ async function runSetupRefresh(cwd: string): Promise<RunSetupRefreshResult> {
   return { ok: true, stderr: '' };
 }
 
+async function runSetupRefresh(cwd: string): Promise<RunSetupRefreshResult> {
+  const globalInstallRoot = resolveGlobalInstallRoot();
+  if (!globalInstallRoot) {
+    return {
+      ok: false,
+      stderr: 'Unable to resolve the npm global install root after updating.',
+    };
+  }
+
+  const cliEntry = await resolveInstalledCliEntry(globalInstallRoot);
+  if (!cliEntry) {
+    return {
+      ok: false,
+      stderr: `Unable to find the updated OMX CLI entry under ${join(globalInstallRoot, PACKAGE_NAME)}.`,
+    };
+  }
+
+  return spawnInstalledSetupRefresh(cliEntry, cwd);
+}
+
 async function executeUpdate(
   options: {
     cwd: string;
@@ -313,10 +332,15 @@ async function executeUpdate(
     dependencies.fetchLatestVersion(),
   ]);
 
-  await writeUpdateState(cwd, {
-    last_checked_at: new Date(nowMs).toISOString(),
-    last_seen_latest: latest ?? undefined,
-  });
+  try {
+    await dependencies.writeUpdateState(cwd, {
+      last_checked_at: new Date(nowMs).toISOString(),
+      last_seen_latest: latest ?? undefined,
+    });
+  } catch {
+    // Update-check state is advisory only. Do not fail installs or explicit updates
+    // just because the current working directory is read-only or unavailable.
+  }
 
   if (!current || !latest) {
     if (immediate) {
@@ -326,6 +350,25 @@ async function executeUpdate(
   }
 
   if (!isNewerVersion(current, latest)) {
+    if (immediate) {
+      const installStamp = await dependencies.readUserInstallStamp();
+      if (!doesSetupStampMatchVersion(current, installStamp)) {
+        console.log(
+          `[omx] oh-my-codex is already up to date (v${current}). Running setup refresh...`,
+        );
+        const setupRefreshResult = await dependencies.runSetupRefresh(cwd);
+        if (!setupRefreshResult.ok) {
+          console.log(
+            `[omx] Update installed, but the setup refresh failed. Run \`omx setup\` with the new install. (${setupRefreshResult.stderr})`,
+          );
+          return { status: 'failed', currentVersion: current, latestVersion: latest };
+        }
+        await writeSuccessfulInstallStamp(current);
+        console.log(`[omx] Setup refresh completed for v${current}. Restart to use current code.`);
+        return { status: 'up-to-date', currentVersion: current, latestVersion: latest };
+      }
+    }
+
     if (immediate) {
       console.log(`[omx] oh-my-codex is already up to date (v${current}).`);
     }

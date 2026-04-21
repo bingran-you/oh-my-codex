@@ -11,6 +11,7 @@ import {
   resolveInstalledCliEntry,
   runImmediateUpdate,
   shouldCheckForUpdates,
+  spawnInstalledSetupRefresh,
   writeUserInstallStamp,
 } from '../update.js';
 
@@ -411,9 +412,119 @@ describe('runImmediateUpdate', () => {
 
   it('reports up-to-date status for explicit update when npm is already current', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
+    const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
     let updateCalls = 0;
+    let refreshCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      await writeUserInstallStamp(
+        {
+          installed_version: '0.14.0',
+          setup_completed_version: '0.14.0',
+          updated_at: '2026-04-20T00:00:00.000Z',
+        },
+        stampPath,
+      );
+
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => '0.14.0',
+        runGlobalUpdate: () => {
+          updateCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+      });
+
+      assert.equal(result.status, 'up-to-date');
+      assert.equal(updateCalls, 0);
+      assert.equal(refreshCalls, 0);
+      assert.match(logs.join('\n'), /already up to date \(v0\.14\.0\)/);
+    } finally {
+      console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('runs setup refresh for explicit update when current version matches but setup stamp is stale', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalLog = console.log;
+    const logs: string[] = [];
+    let refreshCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      await writeUserInstallStamp(
+        {
+          installed_version: '0.14.0',
+          setup_completed_version: '0.13.9',
+          updated_at: '2026-04-20T00:00:00.000Z',
+        },
+        stampPath,
+      );
+
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => '0.14.0',
+        runGlobalUpdate: () => {
+          throw new Error('global update should not run when already current');
+        },
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+      });
+
+      assert.equal(result.status, 'up-to-date');
+      assert.equal(refreshCalls, 1);
+      assert.match(logs.join('\n'), /Running setup refresh/);
+      assert.match(logs.join('\n'), /Setup refresh completed for v0\.14\.0/);
+
+      const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
+        installed_version: string;
+        setup_completed_version: string;
+      };
+      assert.equal(stamp.installed_version, '0.14.0');
+      assert.equal(stamp.setup_completed_version, '0.14.0');
+    } finally {
+      console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('continues explicit update when update-check state cannot be written', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const originalLog = console.log;
+    const logs: string[] = [];
+    let updateCalls = 0;
+    let refreshCalls = 0;
 
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
@@ -422,16 +533,24 @@ describe('runImmediateUpdate', () => {
     try {
       const result = await runImmediateUpdate(cwd, {
         getCurrentVersion: async () => '0.14.0',
-        fetchLatestVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => '0.14.1',
+        writeUpdateState: async () => {
+          throw new Error('EACCES');
+        },
         runGlobalUpdate: () => {
           updateCalls += 1;
           return { ok: true, stderr: '' };
         },
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
       });
 
-      assert.equal(result.status, 'up-to-date');
-      assert.equal(updateCalls, 0);
-      assert.match(logs.join('\n'), /already up to date \(v0\.14\.0\)/);
+      assert.equal(result.status, 'updated');
+      assert.equal(updateCalls, 1);
+      assert.equal(refreshCalls, 1);
+      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
@@ -524,5 +643,20 @@ describe('post-update setup refresh handoff', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('does not impose a timeout on the interactive setup refresh handoff', () => {
+    let receivedTimeout: unknown = Symbol('unset');
+    const result = spawnInstalledSetupRefresh(
+      '/tmp/omx.js',
+      '/tmp/project',
+      ((_command, _args, options) => {
+        receivedTimeout = options?.timeout;
+        return { status: 0, error: undefined };
+      }) as typeof import('node:child_process').spawnSync,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(receivedTimeout, undefined);
   });
 });
