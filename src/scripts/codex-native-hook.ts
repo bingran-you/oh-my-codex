@@ -600,15 +600,28 @@ function resolveQuestionLeaderPaneHint(cwd: string, payload?: CodexHookPayload):
   return /^%\d+$/.test(envPane) ? envPane : '';
 }
 
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 function buildDeepInterviewQuestionBridgeInstruction(cwd: string, payload?: CodexHookPayload): string {
   const omxBin = resolveOmxCliEntryPath({ cwd }) || process.argv[1] || "omx";
   const leaderPaneHint = resolveQuestionLeaderPaneHint(cwd, payload);
-  const bridgeCommand = leaderPaneHint
-    ? `OMX_QUESTION_RETURN_PANE=${shellEscapeSingle(leaderPaneHint)} ${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} question`
-    : `${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} question`;
-  const enforcementNote = leaderPaneHint
-    ? ` When using Bash/background-terminal tool paths, preserve the leader pane by exporting \`OMX_QUESTION_RETURN_PANE=${leaderPaneHint}\` (or equivalent) before invoking \`omx question\`.`
-    : '';
+  const isWindows = process.platform === "win32";
+  const bridgeCommand = isWindows
+    ? leaderPaneHint
+      ? `$env:OMX_QUESTION_RETURN_PANE = ${quotePowerShellArg(leaderPaneHint)}; & ${quotePowerShellArg(process.execPath)} ${quotePowerShellArg(omxBin)} question`
+      : `if ($env:TMUX_PANE) { $env:OMX_QUESTION_RETURN_PANE = $env:TMUX_PANE }; & ${quotePowerShellArg(process.execPath)} ${quotePowerShellArg(omxBin)} question`
+    : leaderPaneHint
+      ? `OMX_QUESTION_RETURN_PANE=${shellEscapeSingle(leaderPaneHint)} ${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} question`
+      : `${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} question`;
+  const enforcementNote = isWindows
+    ? leaderPaneHint
+      ? ` When using PowerShell/background-terminal tool paths, preserve the leader pane by setting \`$env:OMX_QUESTION_RETURN_PANE = '${leaderPaneHint}'\` before invoking \`omx question\`.`
+      : " When using PowerShell/background-terminal tool paths, preserve the leader pane by setting `$env:OMX_QUESTION_RETURN_PANE = $env:TMUX_PANE` before invoking `omx question` when `TMUX_PANE` is available."
+    : leaderPaneHint
+      ? ` When using Bash/background-terminal tool paths, preserve the leader pane by exporting \`OMX_QUESTION_RETURN_PANE=${leaderPaneHint}\` (or equivalent) before invoking \`omx question\`.`
+      : '';
   return `Deep-interview must ask each interview round via \`omx question\`; do not fall back to \`request_user_input\` or plain-text questioning. After starting \`omx question\` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing the interview. If bare \`omx question\` is unavailable in this reused session, use the current-session CLI bridge command: \`${bridgeCommand}\`.${enforcementNote} Stop remains blocked while a deep-interview question obligation is pending.`;
 }
 

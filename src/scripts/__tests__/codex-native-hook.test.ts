@@ -952,6 +952,39 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("emits a PowerShell-aware deep-interview bridge command on Windows", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-routing-win32-"));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    try {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-deep-interview-msg-win32",
+          thread_id: "thread-deep-interview-msg-win32",
+          turn_id: "turn-deep-interview-msg-win32",
+          prompt: "$deep-interview gather requirements",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "deep-interview");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /If bare `omx question` is unavailable in this reused session, use the current-session CLI bridge command:/);
+      assert.match(message, /if \(\$env:TMUX_PANE\) \{ \$env:OMX_QUESTION_RETURN_PANE = \$env:TMUX_PANE \}; & '.+' '.+dist\/cli\/omx\.js' question/);
+      assert.match(message, /When using PowerShell\/background-terminal tool paths, preserve the leader pane by setting `\$env:OMX_QUESTION_RETURN_PANE = \$env:TMUX_PANE` before invoking `omx question` when `TMUX_PANE` is available\./);
+      assert.doesNotMatch(message, /OMX_QUESTION_RETURN_PANE='/);
+      assert.doesNotMatch(message, /exporting `OMX_QUESTION_RETURN_PANE=/i);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it("includes leader-pane preservation guidance when a pane hint is available", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-pane-hint-"));
@@ -989,6 +1022,50 @@ describe("codex native hook dispatch", () => {
       assert.match(message, /preserve the leader pane/i);
       assert.match(message, /OMX_QUESTION_RETURN_PANE=%77/);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses PowerShell leader-pane assignment guidance on Windows when a pane hint is available", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-pane-hint-win32-"));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    try {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      const sessionId = "sess-deep-interview-pane-hint-win32";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        started_at: "2026-04-21T10:00:00.000Z",
+        updated_at: "2026-04-21T10:00:00.000Z",
+        tmux_pane_id: "%77",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-deep-interview-pane-hint-win32",
+          turn_id: "turn-deep-interview-pane-hint-win32",
+          prompt: "$deep-interview gather requirements",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "deep-interview");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /\$env:OMX_QUESTION_RETURN_PANE = '%77'; & '.+' '.+dist\/cli\/omx\.js' question/);
+      assert.match(message, /When using PowerShell\/background-terminal tool paths, preserve the leader pane by setting `\$env:OMX_QUESTION_RETURN_PANE = '%77'` before invoking `omx question`\./);
+      assert.doesNotMatch(message, /OMX_QUESTION_RETURN_PANE='%77'/);
+      assert.doesNotMatch(message, /exporting `OMX_QUESTION_RETURN_PANE=%77`/i);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
       await rm(cwd, { recursive: true, force: true });
     }
   });
