@@ -2118,10 +2118,32 @@ async function readStdinJson(): Promise<NativeHookCliReadResult> {
   }
 }
 
+function writeNativeHookJsonStdout(output: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify(output)}\n`);
+}
+
+function isStopDispatchFailureTestTrigger(payload: CodexHookPayload): boolean {
+  return process.env.NODE_ENV === "test"
+    && process.env.OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH === "1"
+    && readHookEventName(payload) === "Stop";
+}
+
+function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown> {
+  const detail = error instanceof Error ? error.message : String(error);
+  const reason =
+    "OMX native Stop hook failed before normal continuation handling. Continue once more, preserve runtime state, inspect the hook logs, and retry with a valid Stop JSON response.";
+  return {
+    decision: "block",
+    reason,
+    stopReason: "native_stop_dispatch_failure",
+    systemMessage: `${reason} Failure: ${detail}`,
+  };
+}
+
 export async function runCodexNativeHookCli(): Promise<void> {
   const { payload, parseError } = await readStdinJson();
   if (parseError) {
-    process.stdout.write(`${JSON.stringify({
+    writeNativeHookJsonStdout({
       decision: "block",
       reason: "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
       hookSpecificOutput: {
@@ -2129,13 +2151,29 @@ export async function runCodexNativeHookCli(): Promise<void> {
         additionalContext:
           `stdin JSON parsing failed inside codex-native-hook: ${parseError.message}. Emit valid JSON from the native hook caller before retrying.`,
       },
-    })}\n`);
+    });
     return;
   }
 
-  const result = await dispatchCodexNativeHook(payload);
-  if (result.outputJson) {
-    process.stdout.write(`${JSON.stringify(result.outputJson)}\n`);
+  try {
+    if (isStopDispatchFailureTestTrigger(payload)) {
+      throw new Error("test-induced Stop dispatch failure");
+    }
+
+    const result = await dispatchCodexNativeHook(payload);
+    if (result.outputJson) {
+      writeNativeHookJsonStdout(result.outputJson);
+    }
+  } catch (error) {
+    if (readHookEventName(payload) !== "Stop") {
+      throw error;
+    }
+    process.stderr.write(
+      `[omx] codex-native Stop hook dispatch failed: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+    writeNativeHookJsonStdout(buildStopDispatchFailureOutput(error));
   }
 }
 

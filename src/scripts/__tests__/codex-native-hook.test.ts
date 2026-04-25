@@ -23,9 +23,47 @@ import {
 import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 
+function nativeHookScriptPath(): string {
+  return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
+}
+
+function parseSingleJsonStdout(stdout: string): Record<string, unknown> {
+  const trimmed = stdout.trim();
+  assert.notEqual(trimmed, "");
+  assert.equal(trimmed.split("\n").length, 1);
+  return JSON.parse(trimmed) as Record<string, unknown>;
+}
+
+function runNativeHookCli(
+  payload: Record<string, unknown> | string,
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): string {
+  return execFileSync(
+    process.execPath,
+    [nativeHookScriptPath()],
+    {
+      cwd: options.cwd ?? process.cwd(),
+      input: typeof payload === "string" ? payload : JSON.stringify(payload),
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      env: options.env ?? process.env,
+    },
+  );
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+async function writeActiveAutopilotSession(cwd: string, sessionId: string): Promise<void> {
+  await writeJson(join(cwd, ".omx", "state", "session.json"), {
+    session_id: sessionId,
+  });
+  await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"), {
+    active: true,
+    current_phase: "execution",
+  });
 }
 
 async function writeHookCounterPlugin(cwd: string): Promise<string> {
@@ -206,18 +244,9 @@ describe("codex native hook dispatch", () => {
   });
 
   it("emits deterministic JSON stdout when CLI stdin is malformed", () => {
-    const stdout = execFileSync(
-      process.execPath,
-      [join(process.cwd(), "dist", "scripts", "codex-native-hook.js")],
-      {
-        cwd: process.cwd(),
-        input: "{",
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const stdout = runNativeHookCli("{");
 
-    const output = JSON.parse(stdout.trim()) as {
+    const output = parseSingleJsonStdout(stdout) as {
       decision?: string;
       reason?: string;
       hookSpecificOutput?: { hookEventName?: string; additionalContext?: string };
@@ -233,6 +262,86 @@ describe("codex native hook dispatch", () => {
       String(output.hookSpecificOutput?.additionalContext ?? ""),
       /stdin JSON parsing failed inside codex-native-hook:/,
     );
+  });
+
+  it("emits exactly one parseable JSON object for active Stop CLI continuation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-json-"));
+    try {
+      await writeActiveAutopilotSession(cwd, "sess-cli-stop-json");
+
+      const stdout = runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-cli-stop-json",
+        thread_id: "thread-cli-stop-json",
+        turn_id: "turn-cli-stop-json",
+      }, { cwd });
+      const output = parseSingleJsonStdout(stdout);
+
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "autopilot_execution");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps noisy Stop hook plugin stdout out of native Stop CLI stdout", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-noisy-plugin-"));
+    try {
+      await writeActiveAutopilotSession(cwd, "sess-cli-stop-noisy-plugin");
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "hooks", "noisy.mjs"),
+        `export async function onHookEvent(event) {
+  if (event.event === "stop") console.log("PLUGIN_NOISE");
+}
+`,
+        "utf-8",
+      );
+
+      const stdout = runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-cli-stop-noisy-plugin",
+        thread_id: "thread-cli-stop-noisy-plugin",
+        turn_id: "turn-cli-stop-noisy-plugin",
+      }, { cwd });
+      assert.doesNotMatch(stdout, /PLUGIN_NOISE/);
+      const output = parseSingleJsonStdout(stdout);
+
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "autopilot_execution");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits deterministic Stop JSON stdout when Stop dispatch fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-dispatch-failure-"));
+    try {
+      const stdout = runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-cli-stop-dispatch-failure",
+        thread_id: "thread-cli-stop-dispatch-failure",
+        turn_id: "turn-cli-stop-dispatch-failure",
+      }, {
+        cwd,
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH: "1",
+        },
+      });
+      const output = parseSingleJsonStdout(stdout);
+
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_dispatch_failure");
+      assert.match(String(output.reason), /failed before normal continuation handling/);
+      assert.match(String(output.systemMessage), /test-induced Stop dispatch failure/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("maps Codex events onto OMX logical surfaces", () => {
