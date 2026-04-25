@@ -409,6 +409,8 @@ describe("packageRoot", () => {
 });
 
 describe("OMX launcher path resolution", () => {
+  // Launcher paths are expected to use the canonical realpath contract so
+  // symlinked temp roots such as macOS /var -> /private/var compare stably.
   const originalEntryPath = process.env[OMX_ENTRY_PATH_ENV];
   const originalStartupCwd = process.env[OMX_STARTUP_CWD_ENV];
 

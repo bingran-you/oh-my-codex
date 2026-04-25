@@ -851,7 +851,7 @@ async function resolveSetupInstallMode(
   }
 
   const persisted = await readPersistedSetupPreferences(projectRoot);
-  if (persisted?.installMode) {
+  if (persisted?.installMode && persisted.scope === scope) {
     return { installMode: persisted.installMode, source: "persisted" };
   }
 
@@ -1424,7 +1424,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         ? " (from .omx/setup-scope.json)"
         : "";
     console.log(
-      `Using user-scope skill delivery mode: ${resolvedInstallMode.installMode}${installModeSourceMessage}\n`,
+      `Using setup install mode: ${resolvedInstallMode.installMode}${installModeSourceMessage}\n`,
     );
   }
 
@@ -1460,7 +1460,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
           installMode: resolvedInstallMode.installMode,
         }
       : {
-          ...persistedPreferences,
           scope: resolvedScope.scope,
         },
     {
@@ -2015,18 +2014,25 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('Setup complete! Run "omx doctor" to verify installation.');
   console.log("\nNext steps:");
   console.log("  1. Start Codex CLI in your project directory");
-  console.log(
-    "  2. Use role/workflow keywords like $architect, $executor, and $plan in Codex",
-  );
-  console.log(
-    "  3. Browse skills with /skills; AGENTS keyword routing can also activate them implicitly",
-  );
-  console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
   if (isPluginInstallMode) {
     console.log(
-      "  5. Codex plugin discovery supplies OMX surfaces; setup kept legacy native-agent TOML defaults uninstalled",
+      "  2. Codex plugin discovery supplies OMX skills and workflow surfaces",
+    );
+    console.log("  3. Browse plugin-provided skills with /skills");
+    console.log(
+      "  4. Optional AGENTS.md and developer_instructions defaults are only installed when selected during plugin-mode setup",
+    );
+    console.log(
+      "  5. Legacy native-agent TOML defaults remain uninstalled in plugin mode",
     );
   } else {
+    console.log(
+      "  2. Use role/workflow keywords like $architect, $executor, and $plan in Codex",
+    );
+    console.log(
+      "  3. Browse skills with /skills; AGENTS keyword routing can also activate them implicitly",
+    );
+    console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
     console.log(
       "  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/",
     );
