@@ -35,24 +35,26 @@ Compare link: [`v0.14.3...v0.15.0`](https://github.com/Yeachan-Heo/oh-my-codex/c
 
 | Gate | Command | Result | Notes |
 | --- | --- | --- | --- |
-| TypeScript build | `npm run build` | PENDING | Not run yet in this release-prep worktree. |
-| Lint | `npm run lint` | PENDING | Not run yet in this release-prep worktree. |
-| No-unused typecheck | `npm run check:no-unused` | PENDING | Not run yet in this release-prep worktree. |
-| Native agent generation check | `npm run verify:native-agents` | PENDING | Not run yet in this release-prep worktree. |
-| Plugin bundle / mirror check | `npm run verify:plugin-bundle` | PENDING | Not run yet in this release-prep worktree. |
-| Plugin mirror sync check | `npm run sync:plugin:check` | PENDING | Not run yet in this release-prep worktree. |
-| Full Node test suite | `npm test` | PENDING | Not run yet in this release-prep worktree. |
-| Compiled CI test lane | `npm run test:ci:compiled` | PENDING | Requires build output from this worktree. |
-| Explore tests | `npm run test:explore` | PENDING | Requires build output from this worktree. |
-| Sparkshell tests | `npm run test:sparkshell` | PENDING | Requires build output from this worktree. |
-| Packed install smoke | `npm run smoke:packed-install` | PENDING | Requires build output from this worktree. |
-| Rust workspace tests | `cargo test --workspace` | PENDING | Not run yet in this release-prep worktree. |
+| TypeScript build | `npm run build` | PASS | Rebuilt `dist/` after release metadata/collateral edits and after the packed-install smoke fix. |
+| Lint | `npm run lint` | PASS | `Checked 553 files ... No fixes applied.` |
+| No-unused typecheck | `npm run check:no-unused` | PASS | Completed with exit code `0`. |
+| Native agent generation check | `npm run verify:native-agents` | PASS | `verified 20 installable native agents and 33 setup prompt assets`. |
+| Plugin bundle / mirror check | `npm run verify:plugin-bundle` | PASS | Initially failed because plugin manifest still said `0.14.4`; fixed with `npm run sync:plugin`, then check passed for 29 canonical skill directories and plugin metadata. |
+| Plugin mirror sync check | `npm run sync:plugin:check` | PASS | Passed after mirror sync updated `plugins/oh-my-codex/.codex-plugin/plugin.json` to `0.15.0`. |
+| Full Node test suite | `npm test` | NOT COMPLETE | Full compiled node lane was exercised through `npm run test:ci:compiled`; it continued after failures and was stopped after surfacing the blockers below. Treat as blocked until CI/local environment-specific failures are resolved or waived. |
+| Compiled CI test lane | `npm run test:ci:compiled` | FAIL | Surfaced failures in `omx ask`, `resolveExploreHarnessCommand`, `exploreCommand`, detached tmux launcher sequencing, notify fallback/leader-side dispatch, cross-worktree heartbeat, and team message delivery smoke tests. Many failures show live macOS `/private/var` vs `/var` tmp path canonicalization, native harness hydration/platform, tmux/session-environment, and bridge visibility assumptions. |
+| Explore tests | `npm run test:explore` | FAIL | Rust harness unit tests passed (30/30), routing/guidance tests passed, but 4 `dist/cli/__tests__/explore.test.js` tests failed: packaged native hydration, project CODEX_HOME `/private/var` vs `/var`, and two prompt/env-node E2E path-escape assertions caused by tmpdir symlink canonicalization. |
+| Sparkshell tests | `npm run test:sparkshell` | PASS | Rust unit/integration/registry tests passed: 33 + 12 + 5 tests. |
+| Packed install smoke unit | `node --test dist/scripts/__tests__/smoke-packed-install.test.js` | PASS | Added regression coverage for prepack logs before npm pack JSON; 7/7 tests passed. |
+| Packed install smoke | `npm run smoke:packed-install` | PASS | Initially failed parsing `[sync-plugin-mirror]` prepack output as JSON; fixed parser to read the final npm-pack JSON array, reran, and got `packed install smoke: PASS`. |
+| Rust workspace tests | `cargo test --workspace` | PASS | Workspace tests passed for `omx-explore-harness`, `omx-mux`, `omx-runtime`, `omx-runtime-core`, and `omx-sparkshell`. |
 
 ## Known limits / skipped checks
 
 - External push, GitHub PR creation, GitHub CI, release tag creation, npm publish, and GitHub release publication are intentionally out of scope for this prep task.
 - Manual cross-OS checks are not yet run; Windows/tmux coverage currently depends on automated regression suites unless a maintainer runs manual OS validation.
+- A release-prep blocker fix was made for packed-install smoke parsing: `npm pack --json` can include prepack `sync-plugin-mirror` log lines before the final JSON array.
 
 ## Verdict
 
-**Blocked until required verification gates are run.** This file must be updated with actual command outcomes before the release owner treats `0.15.0` as ready to tag or publish.
+**Blocked on remaining test failures.** Release metadata, plugin mirror sync, collateral, build/typecheck/lint, packed install smoke, sparkshell, and Rust workspace gates are prepared, but `npm run test:ci:compiled` / `npm run test:explore` still fail in this macOS tmux worktree. Do not tag or publish `v0.15.0` until those blockers are fixed, reproduced as environment-only and waived, or pass in CI.
