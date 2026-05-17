@@ -635,3 +635,58 @@ fn json_mode_reads_team_state_from_env_root() {
 
     let _ = fs::remove_dir_all(temp);
 }
+
+#[test]
+fn pane_json_cache_reports_hits_and_since_last_changes() {
+    let temp = unique_temp_dir("pane-cache");
+    let tmux = temp.join("tmux");
+    let cache = temp.join("cache");
+    let pane = temp.join("pane.txt");
+    fs::write(&pane, "line-1\nline-2\n").expect("pane");
+    write_executable(&tmux, &format!("#!/bin/sh\ncat {}\n", pane.display()));
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    let first = Command::new(sparkshell_bin())
+        .env("PATH", &path)
+        .env("OMX_SPARKSHELL_CACHE_DIR", cache.display().to_string())
+        .arg("--json")
+        .arg("--tmux-pane")
+        .arg("%31")
+        .output()
+        .expect("first");
+    assert!(first.status.success());
+    assert!(String::from_utf8_lossy(&first.stdout).contains("\"cache_hit\":false"));
+
+    let second = Command::new(sparkshell_bin())
+        .env("PATH", &path)
+        .env("OMX_SPARKSHELL_CACHE_DIR", cache.display().to_string())
+        .arg("--json")
+        .arg("--tmux-pane")
+        .arg("%31")
+        .output()
+        .expect("second");
+    assert!(second.status.success());
+    assert!(String::from_utf8_lossy(&second.stdout).contains("\"cache_hit\":true"));
+
+    fs::write(&pane, "line-1\nline-2\nline-3\n").expect("pane update");
+    let third = Command::new(sparkshell_bin())
+        .env("PATH", &path)
+        .env("OMX_SPARKSHELL_CACHE_DIR", cache.display().to_string())
+        .arg("--json")
+        .arg("--since-last")
+        .arg("--tmux-pane")
+        .arg("%31")
+        .output()
+        .expect("third");
+    assert!(third.status.success());
+    let stdout = String::from_utf8_lossy(&third.stdout);
+    assert!(stdout.contains("\"changed_line_ranges\":[\"3-3\"]"));
+    assert!(stdout.contains("new findings since last observation"));
+    assert!(stdout.contains("line-3"));
+
+    let _ = fs::remove_dir_all(temp);
+}

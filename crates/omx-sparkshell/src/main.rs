@@ -15,7 +15,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +36,9 @@ struct SparkShellOptions {
     budget: usize,
     team: Option<String>,
     worker: Option<String>,
+    since_last: bool,
+    cache: bool,
+    cache_ttl_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -48,8 +51,17 @@ struct Evidence {
     line_range: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CacheMeta {
+    cache_hit: bool,
+    previous_hash: Option<String>,
+    current_hash: String,
+    changed_line_ranges: Vec<String>,
+}
+
 const DEFAULT_BUDGET: usize = 1000;
 const STALE_HEARTBEAT_MS: u64 = 120_000;
+const DEFAULT_CACHE_TTL_MS: u64 = 10 * 60 * 1000;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -83,16 +95,21 @@ fn run(args: Vec<String>) -> Result<(), SparkshellError> {
     let output = execute_command(&execution_argv)?;
     let threshold = read_line_threshold();
     let line_count = combined_visible_lines(&output.stdout, &output.stderr);
+    let evidence = build_evidence(&options, &output);
+    let cache_meta = handle_cache(&options, &output, &evidence.raw_hash)?;
 
     if options.json {
-        let summary = if line_count <= threshold {
+        let summary = if options.since_last {
+            since_last_summary(&output, cache_meta.as_ref(), options.budget)
+        } else if line_count <= threshold {
             compact_text(&combined_text(&output), options.budget)
+        } else if cache_meta.as_ref().is_some_and(|meta| meta.cache_hit) {
+            "unchanged since previous observation".to_string()
         } else {
             summarize_output(&execution_argv, &output)
                 .unwrap_or_else(|error| format!("summary unavailable: {error}"))
         };
-        let evidence = build_evidence(&options, &output);
-        write_json_report(&options, &output, &summary, &evidence)?;
+        write_json_report(&options, &output, &summary, &evidence, cache_meta)?;
         process::exit(output.exit_code());
     }
 
@@ -157,6 +174,9 @@ fn parse_input(args: &[String]) -> Result<SparkShellOptions, SparkshellError> {
     let mut budget = DEFAULT_BUDGET;
     let mut team = None;
     let mut worker = None;
+    let mut since_last = false;
+    let mut cache = true;
+    let mut cache_ttl_ms = DEFAULT_CACHE_TTL_MS;
 
     let mut index = 0;
     while index < args.len() {
@@ -186,6 +206,39 @@ fn parse_input(args: &[String]) -> Result<SparkShellOptions, SparkshellError> {
         }
         if let Some(value) = token.strip_prefix("--budget=") {
             budget = parse_positive_usize(value, "--budget")?;
+            index += 1;
+            continue;
+        }
+        if token == "--since-last" {
+            since_last = true;
+            index += 1;
+            continue;
+        }
+        if token == "--cache-ttl-ms" {
+            let Some(next) = args.get(index + 1) else {
+                return Err(SparkshellError::InvalidArgs(
+                    "--cache-ttl-ms requires a numeric value".to_string(),
+                ));
+            };
+            cache_ttl_ms = parse_positive_usize(next, "--cache-ttl-ms")? as u64;
+            index += 2;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--cache-ttl-ms=") {
+            cache_ttl_ms = parse_positive_usize(value, "--cache-ttl-ms")? as u64;
+            index += 1;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--cache=") {
+            cache = match value {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(SparkshellError::InvalidArgs(
+                        "--cache must be on or off".to_string(),
+                    ))
+                }
+            };
             index += 1;
             continue;
         }
@@ -301,6 +354,9 @@ fn parse_input(args: &[String]) -> Result<SparkShellOptions, SparkshellError> {
         budget,
         team,
         worker,
+        since_last,
+        cache,
+        cache_ttl_ms,
     })
 }
 
@@ -404,6 +460,127 @@ fn optional_json_string(value: &Option<String>) -> String {
         .as_ref()
         .map(|value| json_str(value))
         .unwrap_or_else(|| "null".to_string())
+}
+
+fn cache_dir() -> PathBuf {
+    std::env::var("OMX_SPARKSHELL_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("OMX_TEAM_STATE_ROOT")
+                .map(|root| PathBuf::from(root).join("../cache/sparkshell"))
+                .unwrap_or_else(|_| PathBuf::from(".omx/cache/sparkshell"))
+        })
+}
+
+fn handle_cache(
+    options: &SparkShellOptions,
+    output: &CommandOutput,
+    current_hash: &str,
+) -> Result<Option<CacheMeta>, SparkshellError> {
+    if !options.cache {
+        return Ok(None);
+    }
+    let key = match &options.target {
+        SparkShellTarget::TmuxPane { pane_id, .. } => {
+            format!("pane-{}", pane_id.replace('%', "pct"))
+        }
+        SparkShellTarget::Command(_) => return Ok(None),
+    };
+    let dir = cache_dir();
+    fs::create_dir_all(&dir)?;
+    handle_cache_at_path(
+        &dir.join(format!("{key}.txt")),
+        output,
+        current_hash,
+        options.cache_ttl_ms,
+    )
+}
+
+fn handle_cache_at_path(
+    path: &Path,
+    output: &CommandOutput,
+    current_hash: &str,
+    ttl_ms: u64,
+) -> Result<Option<CacheMeta>, SparkshellError> {
+    let now = now_ms();
+    let current = combined_text(output);
+    let mut previous_hash = None;
+    let mut cache_hit = false;
+    let mut changed_line_ranges = Vec::new();
+    if let Ok(previous) = fs::read_to_string(path) {
+        let mut parts = previous.splitn(3, '\n');
+        let timestamp = parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let old_hash = parts.next().unwrap_or("").to_string();
+        let old_body = parts.next().unwrap_or("");
+        if now.saturating_sub(timestamp) <= ttl_ms {
+            previous_hash = Some(old_hash.clone());
+            cache_hit = old_hash == current_hash;
+            if !cache_hit {
+                changed_line_ranges = changed_ranges(old_body, &current);
+            }
+        }
+    }
+    fs::write(path, format!("{now}\n{current_hash}\n{current}"))?;
+    Ok(Some(CacheMeta {
+        cache_hit,
+        previous_hash,
+        current_hash: current_hash.to_string(),
+        changed_line_ranges,
+    }))
+}
+
+fn since_last_summary(output: &CommandOutput, cache: Option<&CacheMeta>, budget: usize) -> String {
+    let Some(cache) = cache else {
+        return compact_text(&combined_text(output), budget);
+    };
+    if cache.cache_hit {
+        return "unchanged since previous observation".to_string();
+    }
+    if cache.changed_line_ranges.is_empty() {
+        return compact_text(&combined_text(output), budget);
+    }
+    let text = combined_text(output);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut selected = Vec::new();
+    for range in &cache.changed_line_ranges {
+        if let Some((start, end)) = range.split_once('-') {
+            if let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) {
+                for line in lines
+                    .iter()
+                    .skip(start.saturating_sub(1))
+                    .take(end.saturating_sub(start).saturating_add(1))
+                {
+                    selected.push((*line).to_string());
+                }
+            }
+        }
+    }
+    if selected.is_empty() {
+        compact_text(&combined_text(output), budget)
+    } else {
+        compact_text(
+            &format!(
+                "new findings since last observation:\n{}",
+                selected.join("\n")
+            ),
+            budget,
+        )
+    }
+}
+
+fn changed_ranges(old: &str, new: &str) -> Vec<String> {
+    let old_count = old.lines().count();
+    let new_count = new.lines().count();
+    if new_count > old_count {
+        vec![format!("{}-{}", old_count + 1, new_count)]
+    } else if old != new {
+        vec!["1-*".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -591,6 +768,7 @@ fn write_json_report(
     output: &CommandOutput,
     summary: &str,
     evidence: &Evidence,
+    cache: Option<CacheMeta>,
 ) -> Result<(), SparkshellError> {
     let mode = match options.target {
         SparkShellTarget::Command(_) => "command",
@@ -611,6 +789,17 @@ fn write_json_report(
         .tail_lines
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_string());
+    let cache_json = cache
+        .map(|cache| {
+            format!(
+                "{{\"cache_hit\":{},\"previous_hash\":{},\"current_hash\":{},\"changed_line_ranges\":{}}}",
+                cache.cache_hit,
+                optional_json_string(&cache.previous_hash),
+                json_str(&cache.current_hash),
+                json_string_array(&cache.changed_line_ranges),
+            )
+        })
+        .unwrap_or_else(|| "null".to_string());
     let json = format!(
         concat!(
             "{{\n",
@@ -624,7 +813,8 @@ fn write_json_report(
             "  \"evidence\": {{\"stdout_lines\":{},\"stderr_lines\":{},\"raw_hash\":{},\"pane_id\":{},\"tail_lines\":{},\"line_range\":{}}},\n",
             "  \"next_action\": {},\n",
             "  \"confidence\": {:.2},\n",
-            "  \"classification\": {}\n",
+            "  \"classification\": {},\n",
+            "  \"cache\": {}\n",
             "}}\n"
         ),
         output.status.success(),
@@ -643,6 +833,7 @@ fn write_json_report(
         json_str(&diagnostics.next_action),
         diagnostics.confidence,
         json_str(&diagnostics.classification),
+        cache_json,
     );
     io::stdout().write_all(json.as_bytes())?;
     Ok(())
