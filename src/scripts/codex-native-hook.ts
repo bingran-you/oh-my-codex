@@ -69,6 +69,7 @@ import {
 } from "../hooks/extensibility/events.js";
 import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEventRuntime } from "../hooks/extensibility/runtime.js";
+import { getNotificationConfig, getVerbosity } from "../notifications/config.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import {
   onPreCompact as buildWikiPreCompactContext,
@@ -308,6 +309,13 @@ async function isNativeSubagentHook(
   if (candidateIds.length === 0) return false;
 
   return candidateIds.some((id) => summary.allSubagentThreadIds.includes(id));
+}
+
+function shouldSuppressSubagentLifecycleHookDispatch(): boolean {
+  const config = getNotificationConfig();
+  if (config?.includeChildAgents === true) return false;
+  const verbosity = getVerbosity(config);
+  return verbosity !== "agent" && verbosity !== "verbose";
 }
 
 async function recordIgnoredNativeSubagentSessionStart(
@@ -896,13 +904,12 @@ async function reopenRalphCompletionAuditBlock(block: RalphCompletionAuditBlockS
   const nowIso = new Date().toISOString();
   const next: Record<string, unknown> = {
     ...block.state,
-    active: true,
-    current_phase: "verifying",
+    active: false,
+    current_phase: "complete",
     completion_audit_gate: "blocked",
     completion_audit_missing_reason: block.reason,
     completion_audit_blocked_at: nowIso,
   };
-  delete next.completed_at;
   await writeFile(block.path, JSON.stringify(next, null, 2));
 }
 
@@ -3143,7 +3150,7 @@ async function buildStopHookOutput(
       `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}).`,
       "Continue verification and do not report complete yet.",
       "Record machine-readable completion evidence before stopping:",
-      "- either set state.completion_audit = { passed: true, prompt_to_artifact_checklist: [...], verification_evidence: [...] }",
+      '- either set "completion_audit" on the Ralph state object, for example: omx state write --input \'{"mode":"ralph","active":false,"current_phase":"complete","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["..."],"verification_evidence":["..."]}}\' --json',
       "- or set completion_audit_path / completion_audit_evidence_path to a repo-relative JSON file with those same fields.",
       "Markdown artifacts and flat top-level checklist/evidence fields are not accepted by the Ralph Stop gate.",
     ].join(" ");
@@ -3449,11 +3456,13 @@ export async function dispatchCodexNativeHook(
   let canonicalSessionId = safeString(currentSessionState?.session_id).trim();
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
+  let isSubagentSessionStart = false;
 
   if (hookEventName === "SessionStart" && nativeSessionId) {
     const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
     const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
     if (subagentSessionStart && canonicalSessionId) {
+      isSubagentSessionStart = true;
       const belongsToCanonicalSession = await nativeSubagentSessionStartBelongsToCanonicalSession(
         cwd,
         canonicalSessionId,
@@ -3522,6 +3531,9 @@ export async function dispatchCodexNativeHook(
         .map((candidateSessionId) => isNativeSubagentHook(cwd, candidateSessionId, nativeSessionId, threadId)),
     )).some(Boolean)
     : false;
+  const suppressNoisySubagentLifecycleDispatch =
+    (isSubagentSessionStart || isSubagentStop)
+    && shouldSuppressSubagentLifecycleHookDispatch();
 
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
@@ -3620,7 +3632,7 @@ export async function dispatchCodexNativeHook(
     await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
   }
 
-  if (omxEventName && !skipCanonicalSessionStartContext) {
+  if (omxEventName && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
     const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
     if (resolvedNativeSessionId) {
       baseContext.native_session_id = resolvedNativeSessionId;

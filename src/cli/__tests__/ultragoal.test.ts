@@ -444,6 +444,65 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('circuit-breaks repeated GHCR authorization blockers and skips them on retry-failed', async () => {
+    await withCwd(async (cwd) => {
+      const ghcrBlocker = [
+        'GHCR_USERNAME/GHCR_READ_TOKEN/GHCR_BEARER_TOKEN unset;',
+        'gh auth scopes omit read:packages;',
+        'package API returns HTTP 403 requiring read:packages;',
+        'anonymous image verifier returns HTTP 401 authentication required.',
+      ].join(' ');
+
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- Prove GHCR smoke service']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const checkpoint = await capture(() => ultragoalCommand([
+          'checkpoint',
+          '--goal-id', 'G001-prove-ghcr-smoke-service',
+          '--status', 'failed',
+          '--evidence', ghcrBlocker,
+          '--json',
+        ]));
+        assert.equal(checkpoint.exitCode, undefined);
+        const parsed = JSON.parse(checkpoint.stdout.join('\n')) as {
+          plan: { goals: Array<{ status: string; blockerOccurrenceCount?: number; requiredExternalDecision?: string; nonRetriable?: boolean }> };
+          summary: { failed: number; needsUserDecision: number };
+        };
+        const goal = parsed.plan.goals[0];
+        if (attempt < 3) {
+          assert.equal(goal.status, 'failed');
+          assert.equal(parsed.summary.failed, 1);
+          assert.equal(parsed.summary.needsUserDecision, 0);
+          await capture(() => ultragoalCommand(['complete-goals', '--retry-failed']));
+        } else {
+          assert.equal(goal.status, 'needs_user_decision');
+          assert.equal(goal.blockerOccurrenceCount, 3);
+          assert.equal(goal.nonRetriable, true);
+          assert.match(goal.requiredExternalDecision ?? '', /make the GHCR package public/);
+          assert.equal(parsed.summary.failed, 0);
+          assert.equal(parsed.summary.needsUserDecision, 1);
+        }
+      }
+
+      const retry = await capture(() => ultragoalCommand(['complete-goals', '--retry-failed']));
+      const output = retry.stdout.join('\n');
+      assert.doesNotMatch(output, /Ultragoal aggregate-goal handoff/);
+      assert.match(output, /blocked on repeated external authorization/);
+      assert.match(output, /Required external decision: make the GHCR package public/);
+      assert.match(output, /Do not run complete-goals --retry-failed again/);
+
+      const plan = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { activeGoalId?: string; goals: Array<{ status: string; nonRetriable?: boolean }> };
+      assert.equal(plan.activeGoalId, undefined);
+      assert.equal(plan.goals[0].status, 'needs_user_decision');
+      assert.equal(plan.goals[0].nonRetriable, true);
+
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /"event":"goal_needs_user_decision"/);
+      assert.match(ledger, /GHCR_PULL_ACCESS/);
+    });
+  });
+
   it('does not let blocked checkpoints bypass active Codex-goal mismatch protection', async () => {
     await withCwd(async () => {
       await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone', '--codex-goal-mode', 'per-story']));

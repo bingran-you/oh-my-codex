@@ -135,6 +135,9 @@ export interface FullNotificationConfig {
   /** Notification verbosity level (default: "session") */
   verbosity?: VerbosityLevel;
 
+  /** Include native child-agent/subagent lifecycle start/finish hook dispatches (default: false) */
+  includeChildAgents?: boolean;
+
   /** Default platform configs (used when event-specific config is not set) */
   discord?: DiscordNotificationConfig;
   "discord-bot"?: DiscordBotNotificationConfig;

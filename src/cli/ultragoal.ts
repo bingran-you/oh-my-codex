@@ -57,6 +57,9 @@ Codex goal integration:
   Dynamic steering is explicit-only: steer accepts structured fields or directive JSON,
   audits accepted/rejected/deduped results in .omx/ultragoal/ledger.jsonl, and
   rejects broad natural-language mutation requests.
+  Repeated identical external authorization blockers become non-retriable
+  needs_user_decision stories; complete-goals --retry-failed skips them and prints
+  the required external decision instead of looping.
   Final completion is mandatory-gated: run ai-slop-cleaner, rerun verification,
   run $code-review, and pass --quality-gate-json with APPROVE + CLEAR evidence.
   Non-clean final review must use record-review-blockers before update_goal.
@@ -127,14 +130,25 @@ function printStatus(plan: Awaited<ReturnType<typeof readUltragoalPlan>>): void 
   const summary = summarizeUltragoalPlan(plan);
   if (summary.aggregateComplete) {
     console.log('ultragoal aggregate product: complete');
-    console.log(`microgoal ledger bookkeeping (progress-only): ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked`);
+    console.log(`microgoal ledger bookkeeping (progress-only): ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked, ${summary.needsUserDecision} needs-user-decision`);
   } else {
-    console.log(`ultragoal: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked`);
+    console.log(`ultragoal: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked, ${summary.needsUserDecision} needs-user-decision`);
   }
   for (const goal of plan.goals) {
     const marker = goal.id === plan.activeGoalId ? '*' : '-';
     console.log(`${marker} ${goal.id} [${goal.status}] ${goal.title}`);
   }
+}
+
+function blockedDecisionHandoff(plan: Awaited<ReturnType<typeof readUltragoalPlan>>): string | null {
+  const blocked = plan.goals.find((goal) => goal.status === 'needs_user_decision' && goal.nonRetriable);
+  if (!blocked) return null;
+  return [
+    'ultragoal: blocked on repeated external authorization; no retryable failed goals remain.',
+    `Goal: ${blocked.id} — ${blocked.title}`,
+    `Required external decision: ${blocked.requiredExternalDecision ?? 'provide the missing authorization/credential, or explicitly choose a different unblock path'}.`,
+    'Do not run complete-goals --retry-failed again until that external state changes or the user explicitly authorizes an unblock path.',
+  ].join('\n');
 }
 
 async function parseCodexGoalJson(raw: string | undefined): Promise<unknown> {
@@ -384,8 +398,17 @@ export async function ultragoalCommand(args: string[]): Promise<void> {
     if (command === 'complete' || command === 'complete-goals' || command === 'next' || command === 'start-next') {
       const result = await startNextUltragoal(cwd, { retryFailed: hasFlag(rest, '--retry-failed') });
       if (!result.goal) {
-        if (json) printJson({ ok: true, done: result.done, summary: summarizeUltragoalPlan(result.plan) });
-        else console.log(result.done ? 'ultragoal: all goals complete' : 'ultragoal: no pending goals (use --retry-failed to retry failed goals)');
+        const handoff = blockedDecisionHandoff(result.plan);
+        if (json) {
+          printJson({
+            ok: true,
+            done: result.done,
+            blocked: Boolean(handoff),
+            handoff,
+            blockedGoals: result.plan.goals.filter((goal) => goal.status === 'needs_user_decision'),
+            summary: summarizeUltragoalPlan(result.plan),
+          });
+        } else console.log(handoff ?? (result.done ? 'ultragoal: all goals complete' : 'ultragoal: no pending goals (use --retry-failed to retry failed goals)'));
         return;
       }
       const instruction = buildCodexGoalInstruction(result.goal, result.plan);

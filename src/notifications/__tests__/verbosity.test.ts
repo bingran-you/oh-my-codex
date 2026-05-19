@@ -226,6 +226,30 @@ describe('isEventEnabled with verbosity', () => {
     };
     assert.equal(isEventEnabled(config, 'session-start'), true);
   });
+
+  it('uses notifications.events for event gating rather than telegram.events', () => {
+    delete process.env.OMX_NOTIFY_VERBOSITY;
+    const misplacedTelegramEvents = makeConfig({
+      telegram: {
+        enabled: true,
+        botToken: '123:abc',
+        chatId: '456',
+        events: {
+          'session-start': { enabled: false },
+        },
+      } as FullNotificationConfig['telegram'] & {
+        events: Record<string, { enabled: boolean }>;
+      },
+    });
+    assert.equal(isEventEnabled(misplacedTelegramEvents, 'session-start'), true);
+
+    const topLevelEvents = makeConfig({
+      events: {
+        'session-start': { enabled: false },
+      },
+    });
+    assert.equal(isEventEnabled(topLevelEvents, 'session-start'), false);
+  });
 });
 
 // ---------------------------------------------------------------------------

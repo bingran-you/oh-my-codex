@@ -27,12 +27,15 @@ import {
   readNotifyTempContractFromEnv,
 } from "./temp-contract.js";
 
-const CONFIG_FILE = join(codexHome(), ".omx-config.json");
+function configFile(): string {
+  return join(codexHome(), ".omx-config.json");
+}
 
 function readRawConfig(): Record<string, unknown> | null {
-  if (!existsSync(CONFIG_FILE)) return null;
+  const path = configFile();
+  if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+    return JSON.parse(readFileSync(path, "utf-8"));
   } catch {
     return null;
   }

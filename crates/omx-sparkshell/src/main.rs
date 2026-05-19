@@ -65,6 +65,7 @@ struct CacheMeta {
 const DEFAULT_BUDGET: usize = 1000;
 const STALE_HEARTBEAT_MS: u64 = 120_000;
 const DEFAULT_CACHE_TTL_MS: u64 = 10 * 60 * 1000;
+const CACHE_BODY_VERSION: &str = "omx-sparkshell-cache-v2";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -532,9 +533,7 @@ fn handle_cache(
         return Ok(None);
     }
     let key = match &options.target {
-        SparkShellTarget::TmuxPane { pane_id, .. } => {
-            format!("pane-{}", pane_id.replace('%', "pct"))
-        }
+        SparkShellTarget::TmuxPane { pane_id, .. } => pane_cache_key(pane_id),
         SparkShellTarget::Command(_) | SparkShellTarget::Shell(_) => return Ok(None),
     };
     let dir = cache_dir();
@@ -547,6 +546,27 @@ fn handle_cache(
     )
 }
 
+fn pane_cache_key(pane_id: &str) -> String {
+    let percent_escaped = pane_id.replace('%', "pct");
+    if percent_escaped
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return format!("pane-{percent_escaped}");
+    }
+
+    format!("pane-h{:016x}", fnv1a64(pane_id.as_bytes()))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn handle_cache_at_path(
     path: &Path,
     output: &CommandOutput,
@@ -555,6 +575,7 @@ fn handle_cache_at_path(
 ) -> Result<Option<CacheMeta>, SparkshellError> {
     let now = now_ms();
     let current = combined_text(output);
+    let current_line_count = current.lines().count();
     let mut previous_hash = None;
     let mut cache_hit = false;
     let mut changed_line_ranges = Vec::new();
@@ -567,20 +588,53 @@ fn handle_cache_at_path(
         let old_hash = parts.next().unwrap_or("").to_string();
         let old_body = parts.next().unwrap_or("");
         if now.saturating_sub(timestamp) <= ttl_ms {
+            let old_line_count = cached_line_count(old_body);
             previous_hash = Some(old_hash.clone());
             cache_hit = old_hash == current_hash;
             if !cache_hit {
-                changed_line_ranges = changed_ranges(old_body, &current);
+                changed_line_ranges = changed_ranges(
+                    old_hash.as_str(),
+                    current_hash,
+                    old_line_count,
+                    current_line_count,
+                );
             }
         }
     }
-    fs::write(path, format!("{now}\n{current_hash}\n{current}"))?;
+    fs::write(
+        path,
+        cache_contents(now, current_hash, output, current_line_count),
+    )?;
     Ok(Some(CacheMeta {
         cache_hit,
         previous_hash,
         current_hash: current_hash.to_string(),
         changed_line_ranges,
     }))
+}
+
+fn cache_contents(
+    timestamp_ms: u64,
+    current_hash: &str,
+    output: &CommandOutput,
+    current_line_count: usize,
+) -> String {
+    format!(
+        "{timestamp_ms}\n{current_hash}\n{CACHE_BODY_VERSION}\nlines={current_line_count}\nstdout_lines={}\nstderr_lines={}\n",
+        String::from_utf8_lossy(&output.stdout).lines().count(),
+        String::from_utf8_lossy(&output.stderr).lines().count()
+    )
+}
+
+fn cached_line_count(body: &str) -> usize {
+    if let Some(metadata) = body.strip_prefix(CACHE_BODY_VERSION) {
+        return metadata
+            .lines()
+            .find_map(|line| line.strip_prefix("lines="))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+    }
+    body.lines().count()
 }
 
 fn since_last_summary(output: &CommandOutput, cache: Option<&CacheMeta>, budget: usize) -> String {
@@ -622,12 +676,15 @@ fn since_last_summary(output: &CommandOutput, cache: Option<&CacheMeta>, budget:
     }
 }
 
-fn changed_ranges(old: &str, new: &str) -> Vec<String> {
-    let old_count = old.lines().count();
-    let new_count = new.lines().count();
-    if new_count > old_count {
-        vec![format!("{}-{}", old_count + 1, new_count)]
-    } else if old != new {
+fn changed_ranges(
+    old_hash: &str,
+    current_hash: &str,
+    old_line_count: usize,
+    current_line_count: usize,
+) -> Vec<String> {
+    if current_line_count > old_line_count {
+        vec![format!("{}-{}", old_line_count + 1, current_line_count)]
+    } else if old_hash != current_hash {
         vec!["1-*".to_string()]
     } else {
         Vec::new()
@@ -722,28 +779,63 @@ fn classify_team(team: &str, worker: &str) -> Option<Diagnostics> {
     }
 
     if let Ok(status) = fs::read_to_string(base.join("status.json")) {
-        let normalized = status.to_ascii_lowercase();
-        if normalized.contains("blocked") || normalized.contains("needs_input") {
-            return Some(Diagnostics {
-                classification: "waiting_for_input".to_string(),
-                next_action: "inspect raw pane".to_string(),
-                confidence: 0.7,
-                errors: Vec::new(),
-                warnings: Vec::new(),
-            });
+        if let Some(diagnostics) = classify_worker_status(&status) {
+            return Some(diagnostics);
         }
-        if normalized.contains("busy") || normalized.contains("in_progress") {
-            return Some(Diagnostics {
+    }
+
+    None
+}
+
+fn classify_worker_status(status: &str) -> Option<Diagnostics> {
+    // Keep this mapping aligned with the WorkerStatus.state union in src/team/state.ts.
+    let state = extract_json_string(status, "state")
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| status.to_ascii_lowercase());
+
+    match state.as_str() {
+        "working" | "busy" | "in_progress" => Some(Diagnostics {
+            classification: "busy_processing".to_string(),
+            next_action: "wait".to_string(),
+            confidence: 0.72,
+            errors: Vec::new(),
+            warnings: vec!["do not shutdown yet".to_string()],
+        }),
+        "blocked" | "needs_input" => Some(Diagnostics {
+            classification: "waiting_for_input".to_string(),
+            next_action: "inspect raw pane".to_string(),
+            confidence: 0.7,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        "failed" => Some(Diagnostics {
+            classification: "test_failure".to_string(),
+            next_action: "inspect raw pane".to_string(),
+            confidence: 0.7,
+            errors: vec!["worker status is failed".to_string()],
+            warnings: Vec::new(),
+        }),
+        _ if state.contains("working")
+            || state.contains("busy")
+            || state.contains("in_progress") =>
+        {
+            Some(Diagnostics {
                 classification: "busy_processing".to_string(),
                 next_action: "wait".to_string(),
                 confidence: 0.72,
                 errors: Vec::new(),
                 warnings: vec!["do not shutdown yet".to_string()],
-            });
+            })
         }
+        _ if state.contains("blocked") || state.contains("needs_input") => Some(Diagnostics {
+            classification: "waiting_for_input".to_string(),
+            next_action: "inspect raw pane".to_string(),
+            confidence: 0.7,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        _ => None,
     }
-
-    None
 }
 
 fn extract_heartbeat_ms(text: &str) -> Option<u64> {

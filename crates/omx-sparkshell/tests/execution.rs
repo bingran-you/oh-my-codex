@@ -616,6 +616,11 @@ fn team_diagnostics_reads_last_turn_at_heartbeat() {
         r#"{"last_turn_at":"1970-01-01T00:00:00.000Z"}"#,
     )
     .expect("heartbeat");
+    fs::write(
+        worker_dir.join("status.json"),
+        r#"{"state":"working","current_task_id":"1","updated_at":"2026-05-17T20:00:00.000Z"}"#,
+    )
+    .expect("status");
 
     let output = Command::new(sparkshell_bin())
         .env("OMX_TEAM_STATE_ROOT", temp.display().to_string())
@@ -634,6 +639,74 @@ fn team_diagnostics_reads_last_turn_at_heartbeat() {
         String::from_utf8_lossy(&output.stdout).contains("\"classification\": \"stale_heartbeat\"")
     );
     let _ = fs::remove_dir_all(temp);
+}
+
+fn run_team_status_diagnostics(status_json: &str) -> String {
+    let temp = unique_temp_dir("team-status");
+    let worker_dir = temp.join("team/demo/workers/worker-1");
+    fs::create_dir_all(&worker_dir).expect("worker dir");
+    fs::write(worker_dir.join("status.json"), status_json).expect("status");
+
+    let output = Command::new(sparkshell_bin())
+        .env("OMX_TEAM_STATE_ROOT", temp.display().to_string())
+        .arg("--json")
+        .arg("--team")
+        .arg("demo")
+        .arg("--worker")
+        .arg("worker-1")
+        .arg("sh")
+        .arg("-c")
+        .arg("printf 'quiet\n'")
+        .output()
+        .expect("run sparkshell");
+
+    let _ = fs::remove_dir_all(temp);
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn json_mode_treats_worker_status_working_as_busy() {
+    let stdout = run_team_status_diagnostics(
+        r#"{"state":"working","current_task_id":"1","updated_at":"2026-05-17T20:00:00.000Z"}"#,
+    );
+
+    assert!(stdout.contains("\"classification\": \"busy_processing\""));
+    assert!(stdout.contains("\"next_action\": \"wait\""));
+    assert!(stdout.contains("do not shutdown yet"));
+    assert!(!stdout.contains("\"classification\": \"unknown\""));
+}
+
+#[test]
+fn json_mode_reports_blocked_worker_status() {
+    let stdout = run_team_status_diagnostics(
+        r#"{"state":"blocked","updated_at":"2026-05-17T20:00:00.000Z"}"#,
+    );
+
+    assert!(stdout.contains("\"classification\": \"waiting_for_input\""));
+    assert!(stdout.contains("\"next_action\": \"inspect raw pane\""));
+}
+
+#[test]
+fn json_mode_reports_failed_worker_status() {
+    let stdout = run_team_status_diagnostics(
+        r#"{"state":"failed","updated_at":"2026-05-17T20:00:00.000Z"}"#,
+    );
+
+    assert!(stdout.contains("\"classification\": \"test_failure\""));
+    assert!(stdout.contains("worker status is failed"));
+}
+
+#[test]
+fn json_mode_leaves_inactive_worker_statuses_to_output_heuristics() {
+    for state in ["idle", "done", "draining", "unknown"] {
+        let stdout = run_team_status_diagnostics(&format!(
+            r#"{{"state":"{state}","updated_at":"2026-05-17T20:00:00.000Z"}}"#
+        ));
+
+        assert!(stdout.contains("\"classification\": \"unknown\""));
+        assert!(!stdout.contains("do not shutdown yet"));
+    }
 }
 
 #[test]
@@ -724,6 +797,130 @@ fn pane_json_cache_reports_hits_and_since_last_changes() {
 }
 
 #[test]
+fn pane_cache_key_does_not_escape_cache_dir_for_path_like_pane_ids() {
+    let temp = unique_temp_dir("pane-cache-traversal");
+    let tmux = temp.join("tmux");
+    let cache = temp.join("cache");
+    let intermediate = cache.join("pane-..");
+    let outside = temp.join("outside-pr2371.txt");
+
+    fs::create_dir_all(&intermediate).expect("intermediate cache dir");
+    write_executable(
+        &tmux,
+        "#!/bin/sh
+printf 'safe pane output
+'
+",
+    );
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", &path)
+        .env("OMX_SPARKSHELL_CACHE_DIR", cache.display().to_string())
+        .arg("--json")
+        .arg("--tmux-pane")
+        .arg("../../../outside-pr2371")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(
+        output.status.success(),
+        "sparkshell failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !outside.exists(),
+        "path-like pane id wrote outside cache dir at {}",
+        outside.display()
+    );
+
+    let cache_files = fs::read_dir(&cache)
+        .expect("cache dir")
+        .map(|entry| entry.expect("cache entry").path())
+        .collect::<Vec<_>>();
+    assert!(
+        cache_files.iter().any(|path| {
+            path.is_file()
+                && path.parent() == Some(cache.as_path())
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("pane-h") && name.ends_with(".txt"))
+        }),
+        "expected sanitized pane cache file directly under cache dir, got {cache_files:?}"
+    );
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn pane_cache_does_not_persist_raw_secret_like_text() {
+    let temp = unique_temp_dir("pane-cache-secret");
+    let tmux = temp.join("tmux");
+    let cache = temp.join("cache");
+    let pane = temp.join("pane.txt");
+    let secret_line = "OPENAI_API_KEY=sk-test-secret";
+    fs::write(
+        &pane,
+        format!(
+            "starting
+{secret_line}
+finished
+"
+        ),
+    )
+    .expect("pane");
+    write_executable(
+        &tmux,
+        &format!(
+            "#!/bin/sh
+cat {}
+",
+            pane.display()
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", &path)
+        .env("OMX_SPARKSHELL_CACHE_DIR", cache.display().to_string())
+        .arg("--json")
+        .arg("--tmux-pane")
+        .arg("%99")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    let cache_file = cache.join("pane-pct99.txt");
+    let cached = fs::read_to_string(&cache_file).expect("cache file");
+    assert!(
+        !cached.contains(secret_line),
+        "cache file persisted raw secret-like pane text: {cached}"
+    );
+    assert!(
+        !cached.contains("sk-test-secret"),
+        "cache file persisted raw token value: {cached}"
+    );
+    assert!(
+        !cached.contains("OPENAI_API_KEY"),
+        "cache file persisted raw secret variable name: {cached}"
+    );
+    assert!(cached.contains("omx-sparkshell-cache-v2"));
+    assert!(cached.contains("lines=3"));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
 fn raw_mode_preserves_non_utf8_bytes() {
     let temp = unique_temp_dir("raw-non-utf8");
     let script = temp.join("raw-bytes");
@@ -758,5 +955,5 @@ fn shell_mode_executes_explicit_shell_and_redacts_json_output() {
     assert!(stdout.contains("\"mode\": \"shell\""));
     assert!(stdout.contains("left && right"));
     assert!(stdout.contains("Authorization: Bearer [REDACTED]"));
-    assert!(stdout.contains("\"redactions\": {\"count\": 1}"));
+    assert!(stdout.contains(r#""redactions": {"count": 1}"#));
 }

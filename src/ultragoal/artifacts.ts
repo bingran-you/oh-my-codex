@@ -12,7 +12,7 @@ export const ULTRAGOAL_BRIEF = 'brief.md';
 export const ULTRAGOAL_GOALS = 'goals.json';
 export const ULTRAGOAL_LEDGER = 'ledger.jsonl';
 
-export type UltragoalStatus = 'pending' | 'in_progress' | 'complete' | 'failed' | 'review_blocked';
+export type UltragoalStatus = 'pending' | 'in_progress' | 'complete' | 'failed' | 'review_blocked' | 'needs_user_decision';
 export type UltragoalCodexGoalMode = 'aggregate' | 'per_story';
 export type UltragoalSteeringStatus = 'superseded' | 'blocked';
 export type UltragoalSteeringMutationKind =
@@ -126,6 +126,10 @@ export interface UltragoalItem {
   supersededBy?: string[];
   supersedes?: string[];
   blockedReason?: string;
+  blockerSignature?: string;
+  blockerOccurrenceCount?: number;
+  requiredExternalDecision?: string;
+  nonRetriable?: boolean;
   steeringEvidence?: string;
   steeringRationale?: string;
 }
@@ -161,6 +165,7 @@ export interface UltragoalLedgerEntry {
     | 'goal_completed'
     | 'goal_blocked'
     | 'goal_failed'
+    | 'goal_needs_user_decision'
     | 'goal_retried'
     | 'aggregate_completed'
     | 'aggregate_objective_migrated'
@@ -180,6 +185,9 @@ export interface UltragoalLedgerEntry {
   after?: unknown;
   mutationKind?: UltragoalSteeringMutationKind;
   idempotencyKey?: string;
+  blockerSignature?: string;
+  blockerOccurrenceCount?: number;
+  requiredExternalDecision?: string;
 }
 
 export interface CreateUltragoalOptions {
@@ -266,6 +274,63 @@ function cleanLine(line: string): string {
 
 function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeBlockerEvidence(value: string | undefined): string {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[`"'()[\]{}:,;]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+interface ExternalAuthorizationBlocker {
+  signature: string;
+  requiredDecision: string;
+}
+
+function classifyExternalAuthorizationBlocker(evidence: string | undefined): ExternalAuthorizationBlocker | null {
+  const normalized = normalizeBlockerEvidence(evidence);
+  if (!normalized) return null;
+
+  const mentionsAuthorization = /\b(auth|authorization|credential|credentials|token|permission|permissions|scope|scopes|access|unauthorized|forbidden|401|403)\b/.test(normalized);
+  const mentionsMissingAuthority = /\b(unset|missing|required|requires|without|omit|omits|not set|not available|no read packages|read packages)\b/.test(normalized);
+  if (!mentionsAuthorization || !mentionsMissingAuthority) return null;
+
+  const mentionsGhcr = /\b(ghcr|github container registry|read packages|imagepullsecret|package api|anonymous image|container image)\b/.test(normalized);
+  if (mentionsGhcr) {
+    const has401 = /\b(401|unauthorized|anonymous pull|authentication required)\b/.test(normalized);
+    const has403 = /\b(403|forbidden|read packages|package api)\b/.test(normalized);
+    const status = [has401 ? 'HTTP_401_ANONYMOUS' : null, has403 ? 'HTTP_403_NO_READ_PACKAGES' : null]
+      .filter((part): part is string => Boolean(part))
+      .join('+') || 'AUTHORIZATION_REQUIRED';
+    return {
+      signature: `GHCR_PULL_ACCESS:${status}:GHCR_VISIBILITY_OR_CREDENTIAL_REQUIRED`,
+      requiredDecision: 'make the GHCR package public, or provide/authorize a least-privilege read:packages credential and imagePullSecret/SOPS path',
+    };
+  }
+
+  return {
+    signature: 'EXTERNAL_AUTHORIZATION_REQUIRED',
+    requiredDecision: 'provide the missing external authorization/credential, or explicitly choose a different unblock path',
+  };
+}
+
+function sameBlockerOccurrences(entries: readonly UltragoalLedgerEntry[], goalId: string, signature: string): number {
+  return entries.filter((entry) => (
+    entry.goalId === goalId
+    && (entry.event === 'goal_failed' || entry.event === 'goal_needs_user_decision')
+    && entry.blockerSignature === signature
+  )).length;
+}
+
+function clearGoalBlockerFields(goal: UltragoalItem): void {
+  goal.blockedReason = undefined;
+  goal.blockerSignature = undefined;
+  goal.blockerOccurrenceCount = undefined;
+  goal.requiredExternalDecision = undefined;
+  goal.nonRetriable = undefined;
 }
 
 
@@ -532,7 +597,7 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
   return plan;
 }
 
-export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; activeGoalId?: string } {
+export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; needsUserDecision: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; activeGoalId?: string } {
   return {
     total: plan.goals.length,
     pending: plan.goals.filter((goal) => goal.status === 'pending').length,
@@ -540,6 +605,7 @@ export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pe
     complete: plan.goals.filter((goal) => goal.status === 'complete').length,
     failed: plan.goals.filter((goal) => goal.status === 'failed').length,
     reviewBlocked: plan.goals.filter((goal) => goal.status === 'review_blocked').length,
+    needsUserDecision: plan.goals.filter((goal) => goal.status === 'needs_user_decision').length,
     superseded: plan.goals.filter((goal) => goal.steeringStatus === 'superseded').length,
     steeringBlocked: plan.goals.filter((goal) => goal.steeringStatus === 'blocked').length,
     aggregateComplete: plan.aggregateCompletion?.status === 'complete',
@@ -972,7 +1038,7 @@ export async function startNextUltragoal(cwd: string, options: StartNextOptions 
 
   let next = plan.goals.find((goal) => goal.status === 'pending' && isScheduleEligible(goal));
   if (!next && options.retryFailed) {
-    next = plan.goals.find((goal) => goal.status === 'failed' && isScheduleEligible(goal));
+    next = plan.goals.find((goal) => goal.status === 'failed' && !goal.nonRetriable && isScheduleEligible(goal));
     if (next) await appendLedger(cwd, { ts: now, event: 'goal_retried', goalId: next.id, status: 'pending', message: next.failureReason });
   }
   if (!next) return { plan, goal: null, resumed: false, done: isUltragoalDone(plan) };
@@ -982,6 +1048,7 @@ export async function startNextUltragoal(cwd: string, options: StartNextOptions 
   next.startedAt = now;
   next.failedAt = undefined;
   next.failureReason = undefined;
+  clearGoalBlockerFields(next);
   next.updatedAt = now;
   plan.activeGoalId = next.id;
   plan.updatedAt = now;
@@ -1099,22 +1166,42 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     goal.evidence = options.evidence;
     goal.failureReason = undefined;
     goal.failedAt = undefined;
+    clearGoalBlockerFields(goal);
     if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
   } else {
+    const blocker = classifyExternalAuthorizationBlocker(options.evidence);
+    const previousEntries = blocker ? await readSteeringLedgerEntries(cwd) : [];
+    const occurrenceCount = blocker ? sameBlockerOccurrences(previousEntries, goal.id, blocker.signature) + 1 : 0;
+    const shouldCircuitBreak = blocker !== null && occurrenceCount >= 3;
     goal.failedAt = now;
     goal.failureReason = options.evidence;
+    goal.blockerSignature = blocker?.signature;
+    goal.blockerOccurrenceCount = blocker ? occurrenceCount : undefined;
+    goal.requiredExternalDecision = blocker?.requiredDecision;
+    goal.nonRetriable = shouldCircuitBreak || undefined;
+    if (shouldCircuitBreak) {
+      goal.status = 'needs_user_decision';
+      goal.blockedReason = options.evidence;
+    }
     if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
   }
   plan.updatedAt = now;
   await writePlan(cwd, plan);
+  const blockerEvent = goal.status === 'needs_user_decision';
   await appendLedger(cwd, {
     ts: now,
-    event: options.status === 'complete' ? 'goal_completed' : 'goal_failed',
+    event: options.status === 'complete' ? 'goal_completed' : blockerEvent ? 'goal_needs_user_decision' : 'goal_failed',
     goalId: goal.id,
     status: goal.status,
     evidence: options.evidence,
     codexGoal: options.codexGoal,
     qualityGate,
+    blockerSignature: goal.blockerSignature,
+    blockerOccurrenceCount: goal.blockerOccurrenceCount,
+    requiredExternalDecision: goal.requiredExternalDecision,
+    message: blockerEvent
+      ? `Blocked on repeated external authorization. Required decision: ${goal.requiredExternalDecision}.`
+      : undefined,
   });
   return plan;
 }
