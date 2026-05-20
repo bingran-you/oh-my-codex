@@ -2,7 +2,11 @@ import {
   buildDocumentRefreshAdvisoryOutput,
   evaluateStagedDocumentRefresh,
 } from "../document-refresh/enforcer.js";
-import { isLoreCommitGuardEnabled } from "../config/commit-lore-guard.js";
+import {
+  OMX_LORE_COMMIT_GUARD_ENV,
+  isLoreCommitGuardEnabled,
+  readConfiguredLoreCommitGuardValue,
+} from "../config/commit-lore-guard.js";
 import { resolveCodexExecutionSurface } from "./codex-execution-surface.js";
 
 type CodexHookPayload = Record<string, unknown>;
@@ -746,6 +750,17 @@ function buildEffectiveLoreCommitGuardEnv(parsed: GitCommitCommandParseResult): 
   }
   for (const [name, value] of Object.entries(parsed.inlineEnvironment)) {
     if (typeof value === "string") effectiveEnvironment[name] = value;
+  }
+
+  if (
+    !parsed.environmentStartsClean
+    && !parsed.unsetEnvironmentNames.includes(OMX_LORE_COMMIT_GUARD_ENV)
+    && typeof effectiveEnvironment[OMX_LORE_COMMIT_GUARD_ENV] !== "string"
+  ) {
+    const configuredValue = readConfiguredLoreCommitGuardValue(effectiveEnvironment);
+    if (typeof configuredValue === "string") {
+      effectiveEnvironment[OMX_LORE_COMMIT_GUARD_ENV] = configuredValue;
+    }
   }
   return effectiveEnvironment;
 }

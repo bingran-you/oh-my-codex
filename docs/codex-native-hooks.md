@@ -83,9 +83,14 @@ OMX_LORE_COMMIT_GUARD = "1"
 
 The opt-in controls only the Lore-style `git commit` blocking guard. Other
 native `PreToolUse` checks, including document-refresh warnings and command
-safety checks, still run. `omx doctor` reports whether the guard is enabled by
-explicit opt-in, disabled by default/config/environment, or disabled because an
-explicit value is invalid.
+safety checks, still run. Native hook enforcement reads the same persistent
+Codex config fallback when the hook process does not already have
+`OMX_LORE_COMMIT_GUARD` in its environment. Inline command environment still
+wins for that command, so `OMX_LORE_COMMIT_GUARD=0 git commit ...` disables a
+persistent opt-in and `env -u OMX_LORE_COMMIT_GUARD git commit ...` removes the
+persistent fallback for that invocation. `omx doctor` reports whether the guard
+is enabled by explicit opt-in, disabled by default/config/environment, or
+disabled because an explicit value is invalid.
 
 Warning scope is intentionally narrow and rule-scoped:
 

@@ -63,6 +63,40 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+async function withLoreGuardConfig<T>(
+  value: string,
+  prefix: string,
+  run: (cwd: string) => Promise<T>,
+): Promise<T> {
+  const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-pretool-git-commit-lore-${prefix}-`));
+  const codexHome = await mkdtemp(join(tmpdir(), `omx-native-hook-codex-home-lore-${prefix}-`));
+  const defaultHome = await mkdtemp(join(tmpdir(), `omx-native-hook-home-lore-${prefix}-`));
+  const originalGuard = process.env.OMX_LORE_COMMIT_GUARD;
+  const originalCodexHome = process.env.CODEX_HOME;
+  const originalHome = process.env.HOME;
+  try {
+    delete process.env.OMX_LORE_COMMIT_GUARD;
+    process.env.CODEX_HOME = codexHome;
+    process.env.HOME = defaultHome;
+    await writeFile(
+      join(codexHome, "config.toml"),
+      `[shell_environment_policy.set]\nOMX_LORE_COMMIT_GUARD = "${value}"\n`,
+      "utf-8",
+    );
+    return await run(cwd);
+  } finally {
+    if (originalGuard === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+    else process.env.OMX_LORE_COMMIT_GUARD = originalGuard;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    await rm(cwd, { recursive: true, force: true });
+    await rm(codexHome, { recursive: true, force: true });
+    await rm(defaultHome, { recursive: true, force: true });
+  }
+}
+
 function buildWorkerStopFakeTmux(
   tmuxLogPath: string,
   options: { failSend?: boolean; busyLeader?: boolean } = {},
@@ -4385,6 +4419,80 @@ exit 0
     }
   });
 
+  it("blocks non-Lore git commit messages when the Lore commit guard is enabled in CODEX_HOME config.toml", async () => {
+    await withLoreGuardConfig("1", "config-enabled", async (cwd) => {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-config-enabled",
+          tool_input: { command: 'git commit -m "fix: conventional"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Lore protocol/);
+    });
+  });
+
+  it("allows non-Lore git commit messages when the Lore commit guard is disabled in CODEX_HOME config.toml", async () => {
+    await withLoreGuardConfig("0", "config-disabled", async (cwd) => {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-config-disabled",
+          tool_input: { command: 'git commit -m "fix: use conventional commit"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    });
+  });
+
+  it("lets inline Lore commit guard values override a disabled CODEX_HOME config.toml", async () => {
+    await withLoreGuardConfig("0", "config-inline-enabled", async (cwd) => {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-config-inline-enabled",
+          tool_input: { command: 'OMX_LORE_COMMIT_GUARD=1 git commit -m "fix: conventional"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Lore protocol/);
+    });
+  });
+
+  it("restores default-off Lore guard when env -u removes a disabled CODEX_HOME config source", async () => {
+    await withLoreGuardConfig("0", "config-codex-home-unset", async (cwd) => {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-config-codex-home-unset",
+          tool_input: { command: 'env -u CODEX_HOME git commit -m "fix: conventional"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    });
+  });
+
   it("allows non-Lore git commit messages when the Lore commit guard is disabled inline", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-lore-inline-disabled-"));
     try {
@@ -4451,6 +4559,24 @@ exit 0
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("restores default-off Lore guard when env -u unsets a config.toml fallback", async () => {
+    await withLoreGuardConfig("1", "config-env-unset", async (cwd) => {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-config-env-unset",
+          tool_input: { command: 'env -u OMX_LORE_COMMIT_GUARD git commit -m "fix: conventional"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    });
   });
 
   it("restores default-off Lore guard when env -u unsets an enabled process env", async () => {
