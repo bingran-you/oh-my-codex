@@ -192,6 +192,71 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(Object.prototype.hasOwnProperty.call(ext?.handoff_artifacts ?? {}, 'review_verdict'), false);
     });
 
+    it('returns to ralplan rather than deep-interview after default quality-gate failures', async () => {
+      const order: string[] = [];
+      let qaRuns = 0;
+      const stages: PipelineStage[] = [
+        makeStage('deep-interview', undefined, {
+          canSkip: () => {
+            order.push('deep-interview:skip-check');
+            return false;
+          },
+        }),
+        {
+          name: 'ralplan',
+          async run(): Promise<StageResult> {
+            order.push('ralplan');
+            return { status: 'completed', artifacts: { plan: `cycle-${order.length}` }, duration_ms: 0 };
+          },
+        },
+        makeStage('ultragoal', { artifacts: { implemented: true } }),
+        makeStage('code-review', {
+          artifacts: {
+            review_verdict: { recommendation: 'APPROVE', architectural_status: 'CLEAR', clean: true },
+            return_to_ralplan_reason: null,
+          },
+        }),
+        {
+          name: 'ultraqa',
+          async run(): Promise<StageResult> {
+            order.push('ultraqa');
+            qaRuns += 1;
+            const clean = qaRuns > 1;
+            return {
+              status: 'completed',
+              artifacts: {
+                qa_verdict: { clean, skipped: false, summary: clean ? 'QA clean.' : 'QA found a regression.' },
+                return_to_ralplan_reason: clean ? null : 'QA found a regression.',
+              },
+              duration_ms: 0,
+            };
+          },
+        },
+      ];
+
+      const result = await runPipeline({
+        name: 'default-quality-loop-test',
+        task: 'loop until QA clean',
+        stages,
+        cwd: tempDir,
+        maxRalphIterations: 3,
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.deepEqual(order, [
+        'deep-interview:skip-check',
+        'ralplan',
+        'ultraqa',
+        'ralplan',
+        'ultraqa',
+      ]);
+
+      const ext = await readPipelineState(tempDir);
+      assert.equal(ext?.review_cycle, 1);
+      assert.equal((ext?.qa_verdict as { clean?: boolean } | undefined)?.clean, true);
+      assert.equal(ext?.return_to_ralplan_reason, null);
+    });
+
     it('fails after bounded non-clean code-review cycles', async () => {
       const stages: PipelineStage[] = [
         makeStage('ralplan'),

@@ -21,6 +21,7 @@ import type {
   PipelineConfig,
   PipelineResult,
   PipelineModeStateExtension,
+  PipelineStage,
   StageContext,
   StageResult,
 } from './types.js';
@@ -187,7 +188,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         return_to_ralplan_reason: returnToRalplanReason ?? null,
         review_cycle: reviewCycle,
       } : {}),
-      pipeline_stage_index: shouldReturnToRalplan ? 0 : i,
+      pipeline_stage_index: shouldReturnToRalplan ? findStageIndex(config.stages, 'ralplan') : i,
       pipeline_stage_results: { ...stageResults },
     } as Partial<PipelineModeStateExtension>, cwd);
 
@@ -241,7 +242,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
       lastStageName = undefined;
       previousResult = result;
-      i = -1;
+      i = findStageIndex(config.stages, 'ralplan') - 1;
       continue;
     }
 
@@ -336,6 +337,11 @@ function toHandoffArtifactKey(stageName: string): string {
     default:
       return stageName;
   }
+}
+
+function findStageIndex(stages: readonly PipelineStage[], stageName: string): number {
+  const index = stages.findIndex((stage) => stage.name === stageName);
+  return index >= 0 ? index : 0;
 }
 
 function validateConfig(config: PipelineConfig): void {
