@@ -1,5 +1,6 @@
 import {
   mkdtempSync,
+  realpathSync,
   rmSync,
 } from 'node:fs';
 import { mkdirSync } from 'node:fs';
@@ -22,6 +23,16 @@ export const PACKED_INSTALL_SMOKE_CORE_COMMANDS = [
   ['version'],
   ['api', '--help'],
   ['sparkshell', '--help'],
+] as const;
+
+export const PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS = [
+  'SessionStart',
+  'PreToolUse',
+  'PostToolUse',
+  'UserPromptSubmit',
+  'PreCompact',
+  'PostCompact',
+  'Stop',
 ] as const;
 
 function usage(): string {
@@ -112,6 +123,99 @@ function npmBinName(name: string): string {
   return process.platform === 'win32' ? `${name}.cmd` : name;
 }
 
+function resolveGlobalNodeModules(prefixDir: string): string {
+  const result = run('npm', ['root', '-g', '--prefix', prefixDir], { cwd: prefixDir });
+  const root = String(result.stdout || '').trim();
+  if (!root) throw new Error('npm root -g did not return a node_modules directory');
+  return root;
+}
+
+export function validateHookStdout(eventName: string, stdout: string): void {
+  const trimmed = stdout.trim();
+  if (!trimmed) return;
+  try {
+    JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error(
+      `native hook ${eventName} emitted invalid JSON stdout: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export function buildNativeHookSmokePayload(
+  eventName: typeof PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS[number],
+  smokeCwd: string,
+): Record<string, unknown> {
+  const base = {
+    hook_event_name: eventName,
+    session_id: `packed-install-smoke-${eventName}`,
+    cwd: smokeCwd,
+  };
+  switch (eventName) {
+    case 'SessionStart':
+      return {
+        ...base,
+        transcript_path: join(smokeCwd, 'nonexistent-transcript.jsonl'),
+      };
+    case 'PreToolUse':
+      return {
+        ...base,
+        tool_name: 'Bash',
+        tool_use_id: 'packed-install-smoke-tool',
+        tool_input: { command: 'echo packed install smoke' },
+      };
+    case 'PostToolUse':
+      return {
+        ...base,
+        tool_name: 'Bash',
+        tool_use_id: 'packed-install-smoke-tool',
+        tool_input: { command: 'echo packed install smoke' },
+        tool_response: {
+          exit_code: 0,
+          stdout: 'packed install smoke\n',
+          stderr: '',
+        },
+      };
+    case 'UserPromptSubmit':
+      return {
+        ...base,
+        transcript_path: join(smokeCwd, 'nonexistent-transcript.jsonl'),
+        prompt: 'packed install native hook smoke test',
+      };
+    case 'PreCompact':
+    case 'PostCompact':
+    case 'Stop':
+      return base;
+  }
+}
+
+function smokeInstalledNativeHookDist(prefixDir: string): void {
+  const globalNodeModules = resolveGlobalNodeModules(prefixDir);
+  const packageRoot = join(globalNodeModules, 'oh-my-codex');
+  const hookScript = join(packageRoot, 'dist', 'scripts', 'codex-native-hook.js');
+  const smokeCwd = mkdtempSync(join(tmpdir(), 'omx-packed-hook-smoke-'));
+  try {
+    for (const eventName of PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS) {
+      const payload = buildNativeHookSmokePayload(eventName, smokeCwd);
+      const result = run(process.execPath, [realpathSync(hookScript)], {
+        cwd: smokeCwd,
+        env: {
+          ...process.env,
+          OMX_NATIVE_HOOK_DOCTOR_SMOKE: '1',
+          OMX_ROOT: join(smokeCwd, '.omx-packed-hook-root'),
+          OMX_SESSION_ID: `packed-install-smoke-${eventName}`,
+          OMX_SOURCE_CWD: smokeCwd,
+          OMX_STARTUP_CWD: smokeCwd,
+        },
+        input: JSON.stringify(payload),
+      });
+      validateHookStdout(eventName, result.stdout as string);
+    }
+  } finally {
+    rmSync(smokeCwd, { recursive: true, force: true });
+  }
+}
+
 export function parseNpmPackJsonOutput(stdout: string): Array<{ filename: string }> {
   const start = stdout.lastIndexOf('\n[');
   const jsonText = (start >= 0 ? stdout.slice(start + 1) : stdout).trim();
@@ -147,6 +251,7 @@ async function main(): Promise<void> {
     for (const argv of PACKED_INSTALL_SMOKE_CORE_COMMANDS) {
       run(omxPath, argv, { cwd: repoRoot });
     }
+    smokeInstalledNativeHookDist(prefixDir);
 
     console.log('packed install smoke: PASS');
   } finally {

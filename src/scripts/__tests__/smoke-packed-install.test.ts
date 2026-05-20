@@ -7,10 +7,13 @@ import { test } from 'node:test';
 import {
   ensureRepoDependencies,
   hasUsableNodeModules,
+  buildNativeHookSmokePayload,
+  PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS,
   PACKED_INSTALL_SMOKE_CORE_COMMANDS,
   parseNpmPackJsonOutput,
   resolveGitCommonDir,
   resolveReusableNodeModulesSource,
+  validateHookStdout,
 } from '../smoke-packed-install.js';
 
 test('packed install smoke stays limited to boot + core commands', () => {
@@ -27,6 +30,34 @@ test('packed install smoke stays limited to boot + core commands', () => {
   assert.equal(
     PACKED_INSTALL_SMOKE_CORE_COMMANDS.some((argv) => argv.includes('sparkshell')),
     true,
+  );
+});
+
+test('packed install smoke covers every installed native hook event with minimal payloads', () => {
+  assert.deepEqual(PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS, [
+    'SessionStart',
+    'PreToolUse',
+    'PostToolUse',
+    'UserPromptSubmit',
+    'PreCompact',
+    'PostCompact',
+    'Stop',
+  ]);
+
+  for (const eventName of PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS) {
+    const payload = buildNativeHookSmokePayload(eventName, '/tmp/omx-packed-hook-smoke');
+    assert.equal(payload.hook_event_name, eventName);
+    assert.equal(typeof payload.session_id, 'string');
+    assert.equal(payload.cwd, '/tmp/omx-packed-hook-smoke');
+  }
+});
+
+test('packed install native hook stdout validation allows empty or JSON output only', () => {
+  assert.doesNotThrow(() => validateHookStdout('PostCompact', ''));
+  assert.doesNotThrow(() => validateHookStdout('Stop', '{}\n'));
+  assert.throws(
+    () => validateHookStdout('UserPromptSubmit', '{not json'),
+    /native hook UserPromptSubmit emitted invalid JSON stdout/,
   );
 });
 

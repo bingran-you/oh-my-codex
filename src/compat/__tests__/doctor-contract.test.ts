@@ -74,6 +74,9 @@ function normalizeInstallDoctorOutput(text: string, home: string, cwd: string): 
       if (line.startsWith('Run "omx setup')) {
         return 'Run <SETUP_FOLLOWUP>';
       }
+      if (line.startsWith('Review warnings above. Use "omx setup')) {
+        return 'Run <SETUP_FOLLOWUP>';
+      }
       return line;
     })
     .join('\n');
