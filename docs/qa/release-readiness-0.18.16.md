@@ -73,7 +73,7 @@ Commands are run from `/Users/bellman/Documents/Workspace/oh-my-codex` on branch
 - [x] GitHub release `v0.18.16` exists and is non-draft/non-prerelease — PASS, public release page reports `v0.18.16` as latest.
 - [x] Native assets and manifest are attached — PASS, release workflow `28283919334` completed `Publish Native Assets` and `Smoke Verify Native Assets` successfully; public release page shows assets.
 - [x] `npm view oh-my-codex version` returns `0.18.16` and `latest` points to `0.18.16` — PASS (`{"version":"0.18.16","dist-tags":{"latest":"0.18.16"}}`).
-- [x] Final `dev` fast-forward after publication is green — PASS, `origin/dev` and `origin/main` align at `851e7fc786ed81f295784dda50fb12468953a9ba`; public CI badge for branch `dev` reports `CI - passing`.
+- [x] Final `dev` fast-forward after publication is green — PASS, the shipped artifact commit is `851e7fc786ed81f295784dda50fb12468953a9ba`; after the docs-only post-publication correction, `origin/dev` and `origin/main` align at correction commit `273581583f01d0b2048f188191c5d3b5e0f675b4`; public CI badge for branch `dev` reports `CI - passing`.
 
 ## Post-publication correction
 
